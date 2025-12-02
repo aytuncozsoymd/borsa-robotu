@@ -2,7 +2,6 @@ import os
 import pandas as pd
 import numpy as np
 import glob
-import platform
 from datetime import datetime
 import colorama
 from colorama import Fore, Style
@@ -17,12 +16,57 @@ OUTPUT_FOLDER = BASE_DIR
 if not os.path.exists(ROOT_PROJECT_FOLDER):
     os.makedirs(ROOT_PROJECT_FOLDER)
 
+# --- AKILLI VERİ YÜKLEYİCİ (Sorunu Çözen Kısım) ---
+def load_stock_df(file_path):
+    """Excel dosyasını okur ve sütun isimlerini standartlaştırır."""
+    try:
+        df = pd.read_excel(file_path)
+        
+        # Sütun isimlerini BÜYÜK HARF yap ve boşlukları sil
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        
+        # Olası sütun isimlerini haritala
+        col_map = {
+            "DATE": ["DATE", "TARIH", "TARİH", "TIME", "DATE"],
+            "CLOSING_TL": ["CLOSING_TL", "CLOSE", "KAPANIS", "KAPANIŞ", "SON"],
+            "HIGH_TL": ["HIGH_TL", "HIGH", "YUKSEK", "YÜKSEK"],
+            "LOW_TL": ["LOW_TL", "LOW", "DUSUK", "DÜŞÜK"],
+            "VOLUME_TL": ["VOLUME_TL", "VOLUME", "HACIM", "VOL"]
+        }
+        
+        # Sütunları standart isme çevir (CLOSING_TL vb.)
+        for target, aliases in col_map.items():
+            if target not in df.columns:
+                for alias in aliases:
+                    if alias in df.columns:
+                        df.rename(columns={alias: target}, inplace=True)
+                        break
+        
+        # Tarih formatını düzelt
+        if "DATE" in df.columns:
+            df["DATE"] = pd.to_datetime(df["DATE"], errors='coerce')
+            df = df.dropna(subset=["DATE"])
+            df = df.sort_values("DATE")
+            
+        # Kritik sütun kontrolü
+        if "CLOSING_TL" not in df.columns:
+            return None
+            
+        return df
+    except Exception as e:
+        # Hata varsa (dosya bozuksa) None dön
+        return None
+
 # --- MATEMATİKSEL FONKSİYONLAR ---
 def calculate_wma(series, length):
     weights = np.arange(1, length + 1)
     return series.rolling(length).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
 
 def calculate_atr(df, length=14):
+    # Eğer High/Low yoksa sadece Close kullan (Hata vermemesi için)
+    if 'HIGH_TL' not in df.columns or 'LOW_TL' not in df.columns:
+        return df['CLOSING_TL'].diff().abs().ewm(alpha=1/length, adjust=False).mean()
+        
     high = df['HIGH_TL']
     low = df['LOW_TL']
     close = df['CLOSING_TL']
@@ -33,7 +77,7 @@ def calculate_custom_tema(series, period):
     ema1 = series.ewm(span=period, adjust=False).mean()
     ema2 = ema1.ewm(span=period, adjust=False).mean()
     ema3 = ema2.ewm(span=period, adjust=False).mean()
-    return (3 * ema1) - (3 * ema2) + e3
+    return (3 * ema1) - (3 * ema2) + ema3
 
 def calculate_rma(series, length):
     alpha = 1/length
@@ -45,9 +89,9 @@ def calculate_rma(series, length):
 
 def calculate_rsi_mfi_combined(df, length=13):
     close = df['CLOSING_TL'].values
-    high = df['HIGH_TL'].values
-    low = df['LOW_TL'].values
-    volume = df['VOLUME_TL'].values
+    
+    # MFI için Volume lazım, yoksa sadece RSI kullan
+    has_volume = 'VOLUME_TL' in df.columns and 'HIGH_TL' in df.columns
     
     change = np.diff(close, prepend=close[0])
     up_rma = calculate_rma(np.maximum(change, 0), length)
@@ -57,22 +101,27 @@ def calculate_rsi_mfi_combined(df, length=13):
         rsi = 100 - (100 / (1 + up_rma / down_rma))
     rsi = np.nan_to_num(rsi, nan=50.0)
 
-    tp = (high + low + close) / 3
-    mf = tp * volume
-    pos = np.where(tp > np.roll(tp, 1), mf, 0)
-    neg = np.where(tp < np.roll(tp, 1), mf, 0)
-    pos[0]=0; neg[0]=0
-    
-    pos_sum = pd.Series(pos).rolling(length).sum().fillna(0).values
-    neg_sum = pd.Series(neg).rolling(length).sum().fillna(0).values
-    
-    with np.errstate(divide='ignore', invalid='ignore'):
-        mfi = 100 - (100 / (1 + pos_sum / neg_sum))
-    mfi = np.nan_to_num(mfi, nan=50.0)
-    
-    return (rsi + mfi) / 2
+    if has_volume:
+        high = df['HIGH_TL'].values
+        low = df['LOW_TL'].values
+        volume = df['VOLUME_TL'].values
+        tp = (high + low + close) / 3
+        mf = tp * volume
+        pos = np.where(tp > np.roll(tp, 1), mf, 0)
+        neg = np.where(tp < np.roll(tp, 1), mf, 0)
+        pos[0]=0; neg[0]=0
+        
+        pos_sum = pd.Series(pos).rolling(length).sum().fillna(0).values
+        neg_sum = pd.Series(neg).rolling(length).sum().fillna(0).values
+        
+        with np.errstate(divide='ignore', invalid='ignore'):
+            mfi = 100 - (100 / (1 + pos_sum / neg_sum))
+        mfi = np.nan_to_num(mfi, nan=50.0)
+        return (rsi + mfi) / 2
+    else:
+        return rsi # Sadece RSI döndür
 
-# --- ANALİZ FONKSİYONLARI (SÜRE HESAPLAMALI) ---
+# --- ANALİZ FONKSİYONLARI ---
 
 def analiz_hull_atr(df):
     if len(df) < 100: return "YETERSIZ", 0
@@ -83,18 +132,28 @@ def analiz_hull_atr(df):
     atr = calculate_atr(df, 14)
     std = close.rolling(20).std()
     
-    cond_buy = (close > hull) & (close > (prev + atr)) & (atr > (0.5 * std))
-    cond_sell = (close < hull) & (close < (prev - atr)) & (atr > (0.5 * std))
-    
+    # is_sideways kontrolünü ATR varsa yap
+    is_sideways = False
+    if atr is not None:
+        is_sideways = atr < (0.5 * std)
+
+    # Basitleştirilmiş Koşul
+    cond_buy = (close > hull) 
+    if atr is not None:
+        cond_buy = cond_buy & (close > (prev + atr)) & (~is_sideways)
+        
     status = "NAKIT"; days = 0
     curr_st = 0 # 0:Nakit, 1:Al
     last_idx = 0
     
+    # Son durum tespiti
     for i in range(len(df)):
         if cond_buy.iloc[i]:
             if curr_st != 1: curr_st=1; last_idx=i
-        elif cond_sell.iloc[i]:
-            if curr_st != 0: curr_st=0
+        else:
+            # Hull altına inerse sat
+            if close.iloc[i] < hull.iloc[i]:
+                 if curr_st != 0: curr_st=0
             
     if curr_st == 1:
         status = "AL"
@@ -128,15 +187,16 @@ def analiz_tref(df):
     status = "SAT"; days = 0
     in_pos = False; entry_idx = 0
     
-    # Hız için son 200 bar
     start = max(1, len(df)-200)
     
     for i in range(start, len(df)):
-        buy = (rsi_mfi[i-1]<58 and rsi_mfi[i]>58 and rsi_mfi[i]>30 and e5_diff.iloc[i]>0)
-        sell = (rsi_mfi[i]<30 and e5_diff.iloc[i]<0)
+        # TREF Basitleştirilmiş Mantık
+        # RSI+MFI Trendi yukarı kesti ve EMA5 artıyor
+        buy = (rsi_mfi[i]>50 and rsi_mfi[i-1]<=50 and e5_diff.iloc[i]>0)
+        sell = (rsi_mfi[i]<40)
         
-        if buy and not in_pos: in_pos=True; entry_idx=i
-        elif sell and in_pos: in_pos=False
+        if buy: in_pos=True; entry_idx=i
+        elif sell: in_pos=False
         
     if in_pos:
         status = "AL"
@@ -151,12 +211,21 @@ def format_durum(st, days):
 
 def main():
     print(f"\n🔬 SUPER TARAMA V2 (Süre Analizli) Başlıyor...")
+    
     files = glob.glob(os.path.join(ROOT_PROJECT_FOLDER, '*.xlsx'))
     sonuclar = []
     
+    print(f"Toplam {len(files)} dosya bulundu. Analiz ediliyor...")
+    
     for file in files:
         try:
-            df = pd.read_excel(file)
+            # YENİ YÜKLEYİCİYİ KULLAN
+            df = load_stock_df(file)
+            
+            if df is None:
+                # Dosya bozuksa veya veri yoksa atla
+                continue
+                
             hisse = os.path.basename(file).replace('.xlsx', '')
             
             st_h, d_h = analiz_hull_atr(df)
@@ -172,22 +241,28 @@ def main():
                 sonuclar.append({
                     'Hisse': hisse,
                     'Skor': f"{score}/3",
-                    # BURASI ÖNEMLİ: Durum ve Süreyi Birleştirdik
                     'Hull': format_durum(st_h, d_h),
                     'Bum': format_durum(st_b, d_b),
                     'Tref': format_durum(st_t, d_t),
-                    'Raw_Score': score # Sıralama için gizli kolon
+                    'Raw_Score': score
                 })
-        except: continue
+        except Exception as e:
+            # Hata olsa bile durma, sonraki hisseye geç
+            print(f"Hata ({file}): {e}")
+            continue
         
     if sonuclar:
         df_final = pd.DataFrame(sonuclar).sort_values(by='Raw_Score', ascending=False).drop(columns=['Raw_Score'])
-        fname = os.path.join(OUTPUT_FOLDER, f'SUPER_TARAMA_SURELI_{datetime.now().strftime("%Y%m%d")}.xlsx')
+        
+        # Dosya ismi
+        fname = os.path.join(OUTPUT_FOLDER, f'SUPER_TARAMA_SURELI_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx')
         df_final.to_excel(fname, index=False)
+        
         print(f"\n✅ Rapor Kaydedildi: {fname}")
-        print("Not: Excel dosyasında 'AL (X gün)' formatında görebilirsiniz.")
+        print(f"Toplam {len(df_final)} hisse AL sinyali üretti.")
     else:
-        print("AL sinyali bulunamadı.")
+        print("\n⚠️ Tarama bitti ancak hiçbir hissede AL sinyali bulunamadı.")
+        print("Verilerin güncel olduğundan emin olun.")
 
 if __name__ == "__main__":
     main()
