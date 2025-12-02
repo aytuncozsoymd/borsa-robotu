@@ -4,8 +4,9 @@ import numpy as np
 import glob
 import math
 from datetime import datetime
+from tqdm import tqdm  # <--- EKSİK OLAN BU SATIR EKLENDİ
 
-# --- BULUT UYUMLU AYARLAR ---
+# --- BULUT UYUMLU KLASÖR AYARLARI ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 VERI_KLASORU = os.path.join(BASE_DIR, 'DATAson')
 KAYIT_KLASORU = BASE_DIR
@@ -105,6 +106,7 @@ def main():
     results = []
     files = glob.glob(os.path.join(VERI_KLASORU, "*.xlsx"))
     
+    # tqdm burada kullanılıyor, import edildiği için artık hata vermez
     for f in tqdm(files):
         df = load_stock_df(f)
         if df is None or len(df) < 150: continue
