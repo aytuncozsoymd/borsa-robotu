@@ -4,7 +4,8 @@ import os
 import subprocess
 import glob
 import time
-import sys  # <--- HATA GİDERİCİ KİLİT KÜTÜPHANE
+import sys
+from datetime import datetime
 
 # --- BULUT UYUMLU AYARLAR ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -20,15 +21,10 @@ st.set_page_config(page_title="Borsa Komuta Merkezi", page_icon="🚀", layout="
 def get_latest_report_file():
     """Ana dizindeki en son oluşturulan Excel raporunu bulur."""
     try:
-        # Sadece ana dizindeki raporları al (DATAson içindekileri değil)
         files = glob.glob(os.path.join(BASE_DIR, "*.xlsx"))
-        if not files:
-            return None
-        # En yeni dosyayı bul
-        latest_file = max(files, key=os.path.getmtime)
-        return latest_file
-    except:
-        return None
+        if not files: return None
+        return max(files, key=os.path.getmtime)
+    except: return None
 
 def run_script(script_name, display_name):
     """Harici Python dosyasını çalıştırır ve sonuçları ekrana basar."""
@@ -38,19 +34,17 @@ def run_script(script_name, display_name):
         st.error(f"❌ Dosya bulunamadı: {script_name}")
         return
 
-    # Başlangıçtaki en son dosyayı kaydet (Yeni dosya oluştu mu kontrolü için)
+    # İşlem öncesi son dosya
     file_before = get_latest_report_file()
     
     status_area = st.empty()
     output_area = st.empty()
-    result_area = st.container() # Sonuç tablosu için alan
+    result_area = st.container()
     
     status_area.info(f"⏳ {display_name} çalıştırılıyor... Lütfen bekleyin.")
     
     try:
-        # --- HATA DÜZELTME NOKTASI ---
-        # 'python' yerine sys.executable kullanarak sistemin kendi Python'unu zorluyoruz.
-        # Bu sayede tvDatafeed kütüphanesini görmemezlik yapamaz.
+        # Alt işlem başlat (sys.executable ile güvenli mod)
         process = subprocess.Popen(
             [sys.executable, script_path], 
             stdout=subprocess.PIPE,
@@ -66,20 +60,18 @@ def run_script(script_name, display_name):
         if process.returncode == 0:
             status_area.success(f"✅ {display_name} tamamlandı!")
             
-            # --- EKRANDA GÖSTERME ÖZELLİĞİ ---
-            # Eğer bu bir analiz scriptiyse (Veri indirme değilse) sonucu göster
+            # Eğer analiz koduysa ve yeni rapor oluştuysa ekrana bas
             if "FinDow" not in script_name:
                 file_after = get_latest_report_file()
-                
-                # Yeni bir dosya oluştuysa veya güncellendiyse
                 if file_after and (file_before != file_after or os.path.getmtime(file_after) > time.time() - 60):
                     try:
+                        # İlk sayfayı oku ve göster
                         df_result = pd.read_excel(file_after)
                         with result_area:
+                            st.divider()
                             st.subheader(f"📊 Analiz Sonucu: {os.path.basename(file_after)}")
                             st.dataframe(df_result, use_container_width=True)
-                    except Exception as e:
-                        st.warning(f"Tablo gösterilemedi (Dosya formatı uyumsuz olabilir): {e}")
+                    except: pass # Okuma hatası olursa geç
 
             with output_area.expander("İşlem Kayıtlarını Gör (Log)", expanded=False):
                 st.code(stdout)
@@ -98,8 +90,27 @@ def get_latest_files_list():
 
 # --- ARAYÜZ (UI) ---
 
-st.title("🎛️ Borsa Algoritmik Komuta Paneli (V2)")
-st.caption(f"Sistem Yolu: `{sys.executable}`") # Debug bilgisi
+st.title("🎛️ Borsa Algoritmik Komuta Paneli")
+
+# --- DURUM GÖSTERGESİ (YENİ EKLENEN KISIM) ---
+excel_files_data = glob.glob(os.path.join(DATA_DIR, '*.xlsx'))
+file_count = len(excel_files_data)
+
+c1, c2 = st.columns([3, 1])
+with c1:
+    if file_count > 10:
+        st.success(f"✅ **SİSTEM HAZIR:** {file_count} adet hisse verisi analize hazır.")
+    elif file_count > 0:
+        st.warning(f"⚠️ **EKSİK VERİ:** Sadece {file_count} adet veri var. Güncelleme önerilir.")
+    else:
+        st.error("🛑 **VERİ YOK:** Analiz yapamazsınız. Lütfen en alttan 'Verileri Güncelle' butonuna basın.")
+
+with c2:
+    if file_count > 0:
+        latest_data = max(excel_files_data, key=os.path.getmtime)
+        last_update = datetime.fromtimestamp(os.path.getmtime(latest_data)).strftime('%H:%M')
+        st.info(f"🕒 Veri Saati: **{last_update}**")
+
 st.markdown("---")
 
 # YAN MENÜ
@@ -109,19 +120,23 @@ with st.sidebar:
         time.sleep(0.5)
         st.rerun()
     
+    st.write("---")
+    
     latest_files = get_latest_files_list()
     if latest_files:
         for f in latest_files:
             fname = os.path.basename(f)
             with open(f, "rb") as file:
                 st.download_button(
-                    label=f"📥 {fname}",
+                    label=f"📥 İndir: {fname}",
                     data=file,
                     file_name=fname,
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
+    else:
+        st.caption("Henüz rapor yok.")
 
-# ANA BUTONLAR
+# BUTONLAR
 st.subheader("🛠️ Analiz Araçları")
 col1, col2, col3 = st.columns(3)
 
@@ -151,5 +166,5 @@ with col3:
 st.markdown("---")
 st.subheader("🔄 Veri Tabanı")
 
-if st.button("🌍 Verileri Güncelle (TradingView)", type="primary", use_container_width=True):
+if st.button("🌍 Verileri Güncelle (Yahoo Finance)", type="primary", use_container_width=True):
     run_script("FinDow_Otomatik.py", "Veri İndirme Robotu")
