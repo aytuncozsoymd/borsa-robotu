@@ -11,4 +11,6 @@ xlsxwriter
 requests
 lxml
 websocket-client
+plotly
 https://github.com/rongardF/tvdatafeed/archive/refs/heads/main.zip
+
