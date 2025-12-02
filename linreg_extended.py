@@ -1,9 +1,10 @@
 import pandas as pd
 import numpy as np
 import os
+import glob
 import time
 from datetime import datetime
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import PatternFill, Font, Alignment
 from openpyxl.utils import get_column_letter
 from sklearn.linear_model import LinearRegression
@@ -29,7 +30,7 @@ def load_stock_df(file_path):
         df = pd.read_excel(file_path)
         df.columns = [str(c).strip().upper() for c in df.columns]
         col_map = {
-            "DATE": ["DATE", "TARIH", "TARİH"], 
+            "DATE": ["DATE", "TARIH", "TARİH", "TIME"], 
             "CLOSING_TL": ["CLOSING_TL", "CLOSE", "KAPANIS", "KAPANIŞ"],
             "VOLUME_TL": ["VOLUME_TL", "VOL", "HACIM"]
         }
@@ -59,205 +60,218 @@ def autofit(ws):
             except: pass
         ws.column_dimensions[col_letter].width = min(length + 2, 50)
 
-def add_report_info(sheet, total, filtered, max_row, report_date, report_duration):
-    start = max_row + 2
-    font = Font(size=9, color='666666', bold=True)
-    info = [
-        ("Rapor Tarihi:", report_date),
-        ("Süre:", report_duration),
-        ("Taranan:", total),
-        ("Filtrelenen:", f"{filtered}/{total}")
-    ]
-    for i, (k, v) in enumerate(info):
-        sheet.cell(row=start+i, column=1, value=k).font = font
-        sheet.cell(row=start+i, column=2, value=v).font = font
+def add_info(ws, total, filtered):
+    r = ws.max_row + 2
+    ws.cell(r, 1, "Toplam Taranan:").font = Font(bold=True)
+    ws.cell(r, 2, total)
+    ws.cell(r+1, 1, "Listedeki Hisse:").font = Font(bold=True)
+    ws.cell(r+1, 2, f"{filtered} ({filtered/total:.1%})" if total>0 else 0)
 
-# --- İŞLEM FONKSİYONLARI ---
+# --- ANA İŞLEM ---
+def main():
+    print(f"\n🚀 FULL DETAYLI TARAMA (Orijinal Versiyon) Başlıyor...")
+    
+    # 1. ESKİ RAPORU BUL (Kıyaslama İçin)
+    prev_file = None
+    all_reports = sorted(glob.glob(os.path.join(OUTPUT_DIR, "Ema_ve_Pearson_Sonuclari-*.xlsx")), key=os.path.getmtime, reverse=True)
+    if len(all_reports) > 0:
+        prev_file = all_reports[0] # En son oluşturulan dosya (şimdikinden önceki)
 
-def process_stocks(data_folder, output_folder):
-    start_time = time.time()
+    # 2. HİSSELERİ TARA
+    files = [f for f in os.listdir(DATA_DIR) if f.endswith('.xlsx')]
     
-    # Dosya ismi
-    ts = datetime.now().strftime('%d-%m-%Y-%H-%M')
-    excel_path = os.path.join(output_folder, f'Ema_ve_Pearson_Sonuclari-{ts}.xlsx')
-    
-    files = [f for f in os.listdir(data_folder) if f.endswith('.xlsx')]
-    
-    results = []
-    all_results = {} # Pearson verileri için
-    
-    periods = [55, 144, 233, 377, 610, 987]
     ema_list = [8, 13, 21, 34, 55, 89, 144, 233]
+    pearson_periods = [55, 89, 144, 233, 377, 610, 987]
+    
+    data_master = [] # Ana veri deposu
+    pearson_master = {} # Pearson verileri
+    channel_master = [] # Kanal verileri
+    
     total_scanned = 0
-
-    print("Hisseler taranıyor...")
-    for f in tqdm(files):
-        df = load_stock_df(os.path.join(data_folder, f))
+    
+    for f in tqdm(files, desc="Analiz"):
+        df = load_stock_df(os.path.join(DATA_DIR, f))
         if df is None: continue
         total_scanned += 1
-        
-        hisse = f.replace('.xlsx', '')
+        hisse = f.replace('.xlsx','')
         close = df['CLOSING_TL']
         curr = close.iloc[-1]
         
-        # EMA Hesapla
+        # EMA
         emas = {p: calculate_ema(close, p).iloc[-1] for p in ema_list}
-        
-        # Durum Analizi
         vals = list(emas.values())
-        # Ideal Up: Fiyat > 8 > 13 ... > 233
         is_ideal = (curr > vals[0]) and all(vals[i] > vals[i+1] for i in range(len(vals)-1))
-        # Up: Fiyat tüm ortalamaların üstünde
         is_up = all(curr > v for v in vals)
         
-        status = ""
-        if is_ideal: status = "IDEAL UP"
-        elif is_up: status = "UP"
+        status = "IDEAL UP" if is_ideal else ("UP" if is_up else "")
         
-        # Pearson Analizi
+        # PEARSON
         p_res = {}
-        for p in periods:
+        for p in pearson_periods:
             if len(df) >= p:
                 y = close.tail(p).values
                 X = np.arange(p).reshape(-1, 1)
-                p_res[f'{p} Gün'] = np.corrcoef(X.flatten(), y)[0, 1]
-            else:
-                p_res[f'{p} Gün'] = np.nan
-        all_results[hisse] = p_res
+                p_res[p] = np.corrcoef(X.flatten(), y)[0, 1]
+            else: p_res[p] = np.nan
+        pearson_master[hisse] = p_res
         
-        # Listeye Ekle
-        row = {'Stock Name': hisse, 'Closing Price': curr, 'Status': 'UP' if is_up else '', 'Ideal Status': status}
+        # ANA DATA
+        row = {'Stock Name': hisse, 'Closing Price': curr, 'Status': status, 'Ideal Status': status} # Orijinal format uyumu
         for p in ema_list: row[f'EMA{p}'] = emas[p]
-        results.append(row)
-
-    # DataFrame Oluştur
-    df_res = pd.DataFrame(results)
-    
-    elapsed = time.time() - start_time
-    dur_str = f"{int(elapsed//60):02d}:{int(elapsed%60):02d}"
-    date_str = datetime.now().strftime('%Y-%m-%d %H:%M')
-
-    # Excel'e Yazma
-    with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-        # SHEET 1: EMA SONUÇLARI
-        df_res.to_excel(writer, index=False, sheet_name='EMA_Sonuclari')
-        ws = writer.sheets['EMA_Sonuclari']
-        ws.freeze_panes = 'A2'
+        data_master.append(row)
         
-        # Renkler
-        header_fill = PatternFill(start_color='BFBFBF', fill_type='solid')
-        blue_fill = PatternFill(start_color='0000FF', fill_type='solid')
-        orange_fill = PatternFill(start_color='FFA500', fill_type='solid')
-        white_font = Font(color='FFFFFF', bold=True)
-        
-        # Başlık Rengi
-        for cell in ws[1]: 
-            cell.fill = header_fill; cell.font = Font(bold=True)
-            
-        # Satır Boyama
-        for row in ws.iter_rows(min_row=2):
-            # UP ise Mavi
-            if row[10].value == 'UP': # Status kolonu
-                for cell in row: cell.fill = blue_fill; cell.font = white_font
-            
-            # Ideal UP ise Turuncu (Son kolon)
-            if row[11].value == 'IDEAL UP':
-                row[11].fill = orange_fill; row[11].font = white_font
-                
-        autofit(ws)
-        add_report_info(ws, total_scanned, len(df_res), ws.max_row, date_str, dur_str)
-        
-        # SHEET 2: PEARSON TÜMÜ
-        pd.DataFrame(all_results).T.to_excel(writer, sheet_name='Pearson_Sonuclari')
-        autofit(writer.sheets['Pearson_Sonuclari'])
-        
-        # SHEET 3: POZİTİF PEARSON (Hata veren kısım düzeltildi)
-        pos_pearson = {}
-        for h, vals in all_results.items():
-            # Tüm değerler pozitif mi?
-            if all((pd.notna(v) and v > 0) for v in vals.values()):
-                pos_pearson[h] = vals
-                
-        if pos_pearson:
-            pd.DataFrame(pos_pearson).T.to_excel(writer, sheet_name='Pozitif_Pearson')
-            autofit(writer.sheets['Pozitif_Pearson'])
-            
-        # SHEET 4: RAPOR UPD (Bulut için basitleştirildi)
-        ws_upd = writer.book.create_sheet("Rapor_Upd")
-        ws_upd.cell(row=1, column=1, value="Bulut versiyonunda geçmiş kıyaslama kapalıdır.").font = Font(bold=True)
-
-    return excel_path
-
-def process_channels(data_folder, main_excel_path):
-    vades = [144, 233, 377, 610]
-    res = []
-    
-    files = [f for f in os.listdir(data_folder) if f.endswith('.xlsx')]
-    for f in tqdm(files, desc="Kanal Analizi"):
-        df = load_stock_df(os.path.join(data_folder, f))
-        if df is None: continue
-        
-        for v in vades:
-            if len(df) < v: continue
-            
-            sub = df.tail(v)
-            y = sub['CLOSING_TL'].values
-            X = np.arange(len(y)).reshape(-1, 1)
-            
-            model = LinearRegression().fit(X, y)
-            pred = model.predict(X)
-            std = np.std(y - pred)
-            
-            last = df['CLOSING_TL'].iloc[-1]
+        # KANAL (233 ve diğerleri için)
+        # Sadece liste başı için 233'ü hesaplayıp ekleyelim, detaylı kanal analizini sonra yaparız
+        if len(df) >= 233:
+            y_ch = close.tail(233).values
+            X_ch = np.arange(len(y_ch)).reshape(-1, 1)
+            model = LinearRegression().fit(X_ch, y_ch)
+            pred = model.predict(X_ch)
+            std = np.std(y_ch - pred)
             upper = pred[-1] + 2*std
             lower = pred[-1] - 2*std
             
-            diff_up = (upper - last)/last*100
-            diff_down = (last - lower)/last*100
+            diff_up = (upper - curr)/curr*100
+            diff_down = (curr - lower)/curr*100
             
-            pearson = np.corrcoef(sub['CLOSING_TL'], pred)[0, 1]
-            if model.coef_[0] < 0: pearson = -pearson
+            # RSI ve Hacim
+            rsi = 50
+            try:
+                delta = close.diff()
+                gain = (delta.where(delta > 0, 0)).rolling(14).mean()
+                loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
+                rs = gain / loss
+                rsi = (100 - (100 / (1 + rs))).fillna(50).iloc[-1]
+            except: pass
             
-            res.append({
-                'Hisse': f.replace('.xlsx',''), 'Vade': v,
-                'Fiyat': last, 'Pearson': pearson,
+            vol_surge = "HAYIR"
+            if "VOLUME_TL" in df.columns:
+                v_avg = df['VOLUME_TL'].rolling(10).mean().iloc[-1]
+                if df['VOLUME_TL'].iloc[-1] > v_avg * 1.2: vol_surge = "EVET"
+            
+            channel_master.append({
+                'Hisse': hisse, 'Vade': 233, 'Fiyat': curr, 
+                'Pearson': p_res[233], 'RSI': rsi, 'Hacim Artışı': vol_surge,
                 'Üst Fark %': diff_up, 'Alt Fark %': diff_down
             })
-            
-    df_ch = pd.DataFrame(res)
+
+    # --- EXCEL OLUŞTURMA ---
+    ts = datetime.now().strftime('%d-%m-%Y-%H-%M')
+    fname = os.path.join(OUTPUT_DIR, f'Ema_ve_Pearson_Sonuclari-{ts}.xlsx')
     
-    # Excel'e Ekleme
-    with pd.ExcelWriter(main_excel_path, engine='openpyxl', mode='a') as writer:
-        df_ch.to_excel(writer, sheet_name='Kanal_Ekstra', index=False)
+    df_main = pd.DataFrame(data_master)
+    df_pearson = pd.DataFrame(pearson_master).T
+    
+    with pd.ExcelWriter(fname, engine='openpyxl') as writer:
         
-        # ListeBaşı Sayfası (Filtreli)
-        lb = df_ch[
-            (df_ch['Pearson'] > 0.9) & 
-            ((df_ch['Üst Fark %'] <= 2) | (df_ch['Alt Fark %'] <= 2))
-        ]
+        # 1. EMA_Sonuclari
+        df_main.to_excel(writer, sheet_name='EMA_Sonuclari', index=False)
+        ws_ema = writer.sheets['EMA_Sonuclari']
+        # Renklendirme
+        blue = PatternFill(start_color='0000FF', fill_type='solid')
+        orange = PatternFill(start_color='FFA500', fill_type='solid')
+        white = Font(color='FFFFFF', bold=True)
         
-        if not lb.empty:
-            lb.to_excel(writer, sheet_name='ListeBaşı', index=False)
-            ws = writer.sheets['ListeBaşı']
+        for row in ws_ema.iter_rows(min_row=2):
+            st_val = row[10].value # Status
+            id_val = row[11].value # Ideal Status
+            if st_val == "UP": 
+                for c in row: c.fill = blue; c.font = white
+            if id_val == "IDEAL UP":
+                row[11].fill = orange; row[11].font = white
+        autofit(ws_ema)
+        
+        # 2. UP-Ideal UP
+        ws_up = writer.book.create_sheet("UP-Ideal UP")
+        ws_up.append(["Hisse", "Durum", "Fiyat"])
+        for r in data_master:
+            if r['Status'] in ["UP", "IDEAL UP"]:
+                ws_up.append([r['Stock Name'], r['Status'], r['Closing Price']])
+        autofit(ws_up)
+        
+        # 3. Pearson_Sonuclari
+        df_pearson.to_excel(writer, sheet_name='Pearson_Sonuclari')
+        autofit(writer.sheets['Pearson_Sonuclari'])
+        
+        # 4. En_Yuksek_Pearson
+        # (Basitleştirilmiş)
+        ws_high = writer.book.create_sheet("En_Yuksek_Pearson")
+        ws_high.append(["Hisse", "En Yüksek Periyot", "Değer"])
+        for h, vals in pearson_master.items():
+            best_p = max(vals, key=vals.get)
+            ws_high.append([h, best_p, vals[best_p]])
+        autofit(ws_high)
+        
+        # 5. Pozitif_Pearson
+        pos_list = {k: v for k, v in pearson_master.items() if all(val > 0 for val in v.values() if pd.notna(val))}
+        pd.DataFrame(pos_list).T.to_excel(writer, sheet_name='Pozitif_Pearson')
+        autofit(writer.sheets['Pozitif_Pearson'])
+        
+        # 6. Com144-233-377 (Kesişim)
+        com_list = []
+        for h, vals in pearson_master.items():
+            if vals.get(144,0)>0.8 and vals.get(233,0)>0.8 and vals.get(377,0)>0.8:
+                com_list.append({'Hisse': h, '144': vals[144], '233': vals[233], '377': vals[377]})
+        pd.DataFrame(com_list).to_excel(writer, sheet_name='Com144-233-377', index=False)
+        
+        # 7-11. Period Ideal Up (Her periyot için ayrı sayfa)
+        target_periods = [144, 233, 377, 610, 987]
+        for p in target_periods:
+            p_ideal_list = []
+            for r in data_master:
+                h = r['Stock Name']
+                if r['Ideal Status'] == "IDEAL UP" and pearson_master[h].get(p, 0) > 0.85:
+                    p_ideal_list.append({'Hisse': h, 'Fiyat': r['Closing Price'], f'Pearson_{p}': pearson_master[h][p]})
             
-            red_fill = PatternFill(start_color='FF0000', fill_type='solid')
-            navy_fill = PatternFill(start_color='000080', fill_type='solid')
-            white_font = Font(color='FFFFFF', bold=True)
+            if p_ideal_list:
+                pd.DataFrame(p_ideal_list).to_excel(writer, sheet_name=f'{p}IdealUp', index=False)
+                autofit(writer.sheets[f'{p}IdealUp'])
+
+        # 12. Rapor_Upd (Karşılaştırma)
+        ws_rep = writer.book.create_sheet("Rapor_Upd")
+        ws_rep.append(["Durum", "Hisse", "Fiyat"])
+        
+        current_ideal = {r['Stock Name'] for r in data_master if r['Ideal Status'] == "IDEAL UP"}
+        prev_ideal = set()
+        
+        if prev_file:
+            try:
+                df_prev = pd.read_excel(prev_file, sheet_name='EMA_Sonuclari')
+                prev_ideal = set(df_prev[df_prev['Ideal Status'] == 'IDEAL UP']['Stock Name'])
+            except: pass
             
-            for row in ws.iter_rows(min_row=2):
-                # Varsayılan Lacivert
-                for cell in row: 
-                    cell.fill = navy_fill; cell.font = white_font
+        new_entries = current_ideal - prev_ideal
+        dropped = prev_ideal - current_ideal
+        
+        for h in new_entries: ws_rep.append(["YENİ GİREN", h, ""])
+        for h in dropped: ws_rep.append(["ÇIKAN", h, ""])
+        if not prev_file: ws_rep.append(["Bilgi", "Geçmiş dosya bulunamadı, hepsi yeni kabul edildi.", ""])
+        autofit(ws_rep)
+        
+        # 13. Kanal_Ekstra
+        df_ch = pd.DataFrame(channel_master)
+        if not df_ch.empty:
+            df_ch.to_excel(writer, sheet_name='Kanal_Ekstra', index=False)
+            autofit(writer.sheets['Kanal_Ekstra'])
+            
+            # 14. ListeBaşı (Filtreli)
+            # Kriter: Pearson > 0.90 VE (Alt bant %2 yakın VEYA Üst bant %2 yakın)
+            lb = df_ch[(df_ch['Pearson'] > 0.90) & ((df_ch['Alt Fark %'] <= 2) | (df_ch['Üst Fark %'] <= 2))]
+            if not lb.empty:
+                lb.to_excel(writer, sheet_name='ListeBaşı', index=False)
+                ws_lb = writer.sheets['ListeBaşı']
+                red = PatternFill(start_color='FF0000', fill_type='solid')
+                navy = PatternFill(start_color='000080', fill_type='solid')
+                white = Font(color='FFFFFF', bold=True)
                 
-                # Alt banda yakınsa (Alım Fırsatı) Kırmızı yap
-                # 'Alt Fark %' kolonu indeks 6 (G sütunu)
-                try:
-                    if row[6].value is not None and float(row[6].value) <= 2:
-                        for cell in row: cell.fill = red_fill
-                except: pass
+                for row in ws_lb.iter_rows(min_row=2):
+                    for cell in row: cell.fill = navy; cell.font = white
+                    # Alt banda yakınsa Kırmızı
+                    if row[7].value <= 2: # Alt Fark %
+                        for cell in row: cell.fill = red
+                autofit(ws_lb)
+
+    print(f"✅ Full Rapor Hazırlandı: {fname}")
 
 if __name__ == "__main__":
-    print("LinReg Extended Analizi Başlıyor...")
-    path = process_stocks(DATA_DIR, OUTPUT_DIR)
-    process_channels(DATA_DIR, path)
-    print(f"✅ İŞLEM TAMAMLANDI: {path}")
+    main()
