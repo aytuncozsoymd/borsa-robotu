@@ -1,10 +1,13 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import os
 import subprocess
 import glob
 import time
 import sys
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 
 # --- BULUT UYUMLU AYARLAR ---
@@ -14,12 +17,72 @@ DATA_DIR = os.path.join(BASE_DIR, 'DATAson')
 if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 
-st.set_page_config(page_title="Borsa Komuta Merkezi", page_icon="🚀", layout="wide")
+st.set_page_config(page_title="Borsa Komuta Merkezi Pro", page_icon="🚀", layout="wide")
 
-# --- FONKSİYONLAR ---
+# --- HESAPLAMA FONKSİYONLARI ---
+def calculate_wma(series, length):
+    weights = np.arange(1, length + 1)
+    return series.rolling(length).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
 
+def calculate_hull(series, length=89):
+    wma_half = calculate_wma(series, int(length / 2))
+    wma_full = calculate_wma(series, length)
+    raw_hma = 2 * wma_half - wma_full
+    return calculate_wma(raw_hma, int(np.sqrt(length)))
+
+def run_backtest_engine(df):
+    """Hull Stratejisi Backtest Motoru"""
+    close = df['CLOSING_TL']
+    hull = calculate_hull(close, 89) # Standart Hull 89
+    
+    trades = []
+    in_position = False
+    entry_price = 0
+    entry_date = None
+    equity = [100] # Başlangıç bakiyesi 100 birim
+    
+    signals = [] # Grafik için sinyal noktaları
+    
+    for i in range(100, len(df)):
+        price = close.iloc[i]
+        date = df['DATE'].iloc[i]
+        h_val = hull.iloc[i]
+        
+        # AL SİNYALİ (Fiyat Hull'u yukarı kesti)
+        if price > h_val and not in_position:
+            in_position = True
+            entry_price = price
+            entry_date = date
+            signals.append({'date': date, 'price': price, 'type': 'buy'})
+            
+        # SAT SİNYALİ (Fiyat Hull'u aşağı kesti)
+        elif price < h_val and in_position:
+            in_position = False
+            exit_price = price
+            pnl = ((exit_price - entry_price) / entry_price) * 100
+            trades.append({
+                'Giriş Tarihi': entry_date,
+                'Çıkış Tarihi': date,
+                'Giriş Fiyatı': entry_price,
+                'Çıkış Fiyatı': exit_price,
+                'Kar/Zarar %': pnl
+            })
+            equity.append(equity[-1] * (1 + pnl/100))
+            signals.append({'date': date, 'price': price, 'type': 'sell'})
+            
+    # Açık pozisyon varsa son durum
+    current_status = "NAKİT"
+    if in_position:
+        current_status = "POZİSYONDA (AL)"
+        # Sanal kapanış
+        pnl = ((close.iloc[-1] - entry_price) / entry_price) * 100
+        trades.append({'Giriş Tarihi': entry_date, 'Çıkış Tarihi': 'Devam Ediyor', 
+                       'Giriş Fiyatı': entry_price, 'Çıkış Fiyatı': close.iloc[-1], 'Kar/Zarar %': pnl})
+        
+    return trades, equity, signals, hull, current_status
+
+# --- PANEL FONKSİYONLARI ---
 def get_latest_report_file():
-    """Ana dizindeki en son oluşturulan Excel raporunu bulur."""
     try:
         files = glob.glob(os.path.join(BASE_DIR, "*.xlsx"))
         if not files: return None
@@ -27,59 +90,29 @@ def get_latest_report_file():
     except: return None
 
 def reset_system():
-    """Tüm verileri ve raporları temizler."""
     deleted_count = 0
-    # 1. Hisse Verilerini Sil
-    data_files = glob.glob(os.path.join(DATA_DIR, "*.xlsx"))
-    for f in data_files:
-        try:
-            os.remove(f)
-            deleted_count += 1
-        except: pass
-    # 2. Raporları Sil
-    report_files = glob.glob(os.path.join(BASE_DIR, "*.xlsx"))
-    for f in report_files:
-        try:
-            os.remove(f)
-            deleted_count += 1
+    for f in glob.glob(os.path.join(DATA_DIR, "*.xlsx")) + glob.glob(os.path.join(BASE_DIR, "*.xlsx")):
+        try: os.remove(f); deleted_count += 1
         except: pass
     return deleted_count
 
 def run_script(script_name, display_name):
-    """Harici Python dosyasını çalıştırır."""
     script_path = os.path.join(BASE_DIR, script_name)
-    
     if not os.path.exists(script_path):
-        st.error(f"❌ Dosya bulunamadı: {script_name}")
-        return
+        st.error(f"❌ Dosya bulunamadı: {script_name}"); return
 
     status_area = st.empty()
-    status_area.info(f"⏳ {display_name} çalıştırılıyor... Lütfen bekleyin.")
+    status_area.info(f"⏳ {display_name} çalıştırılıyor...")
     
     try:
-        process = subprocess.Popen(
-            [sys.executable, script_path], 
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            cwd=BASE_DIR, 
-            encoding='utf-8',
-            errors='ignore'
-        )
-        
+        process = subprocess.Popen([sys.executable, script_path], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=BASE_DIR, encoding='utf-8', errors='ignore')
         stdout, stderr = process.communicate()
-        
         if process.returncode == 0:
             status_area.success(f"✅ {display_name} tamamlandı! Sonuçlar aşağıdadır.")
-            with st.expander("İşlem Kayıtlarını Gör (Log)", expanded=False):
-                st.code(stdout)
+            with st.expander("Log Kayıtları"): st.code(stdout)
         else:
-            status_area.error("⚠️ Bir hata oluştu!")
-            with st.expander("Hata Detayları"):
-                st.code(stderr)
-                
-    except Exception as e:
-        status_area.error(f"Beklenmedik hata: {e}")
+            status_area.error("⚠️ Hata oluştu!"); st.code(stderr)
+    except Exception as e: status_area.error(f"Hata: {e}")
 
 def get_latest_files_list():
     files = glob.glob(os.path.join(BASE_DIR, "*.xlsx"))
@@ -88,161 +121,162 @@ def get_latest_files_list():
 
 # --- ARAYÜZ (UI) ---
 
-st.title("🎛️ Borsa Algoritmik Komuta Paneli")
+st.title("🎛️ Borsa Komuta Merkezi Pro")
 
-# DURUM GÖSTERGESİ
+# 1. DURUM PANELİ
 excel_files_data = glob.glob(os.path.join(DATA_DIR, '*.xlsx'))
 file_count = len(excel_files_data)
 c1, c2 = st.columns([3, 1])
 with c1:
-    if file_count > 10:
-        st.success(f"✅ **SİSTEM HAZIR:** {file_count} adet hisse verisi mevcut.")
-    elif file_count > 0:
-        st.warning(f"⚠️ **EKSİK VERİ:** Sadece {file_count} adet veri var.")
-    else:
-        st.error("🛑 **VERİ YOK:** Analiz yapamazsınız. Lütfen en alttan 'Verileri Güncelle' butonuna basın.")
-
+    if file_count > 10: st.success(f"✅ **SİSTEM HAZIR:** {file_count} hisse verisi mevcut.")
+    elif file_count > 0: st.warning(f"⚠️ **EKSİK VERİ:** {file_count} adet veri var.")
+    else: st.error("🛑 **VERİ YOK:** Lütfen verileri güncelleyin.")
 with c2:
     if file_count > 0:
-        latest_data = max(excel_files_data, key=os.path.getmtime)
-        last_update = datetime.fromtimestamp(os.path.getmtime(latest_data)) + timedelta(hours=3)
-        st.info(f"🕒 Veri Saati (TR): **{last_update.strftime('%H:%M')}**")
+        latest = max(excel_files_data, key=os.path.getmtime)
+        last_update = datetime.fromtimestamp(os.path.getmtime(latest)) + timedelta(hours=3)
+        st.info(f"🕒 Veri: **{last_update.strftime('%H:%M')}**")
 
 st.markdown("---")
 
-# YAN MENÜ
+# 2. YAN MENÜ
 with st.sidebar:
-    st.header("📂 Rapor Geçmişi")
-    if st.button("🔄 Listeyi Yenile"):
-        time.sleep(0.5)
-        st.rerun()
+    st.header("📂 Raporlar")
+    if st.button("🔄 Yenile"): time.sleep(0.5); st.rerun()
     st.write("---")
-    latest_files = get_latest_files_list()
-    if latest_files:
-        for f in latest_files:
-            fname = os.path.basename(f)
-            with open(f, "rb") as file:
-                st.download_button(
-                    label=f"📥 İndir: {fname}",
-                    data=file,
-                    file_name=fname,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-    else:
-        st.caption("Henüz rapor yok.")
+    for f in get_latest_files_list():
+        with open(f, "rb") as file:
+            st.download_button(f"📥 {os.path.basename(f)}", data=file, file_name=os.path.basename(f))
     
     st.markdown("---")
-    
-    # SIFIRLAMA ALANI (YAN MENÜ)
     st.header("🗑️ Temizlik")
-    with st.expander("⚠️ Tehlikeli Bölge"):
-        st.caption("Tüm hisse verilerini ve raporları siler.")
-        confirm_reset = st.checkbox("Evet, her şeyi silmek istiyorum.")
-        
-        if st.button("💥 SİSTEMİ SIFIRLA", type="primary", disabled=not confirm_reset):
-            deleted = reset_system()
-            st.toast(f"Toplam {deleted} dosya silindi!", icon="🧹")
-            time.sleep(1)
-            st.rerun()
+    with st.popover("⚠️ Verileri Sil"):
+        if st.button("EVET, SİL", type="primary"):
+            d = reset_system(); st.toast(f"{d} dosya silindi!"); time.sleep(1); st.rerun()
 
-# --- VERİ TABANI GÖZLEMCİSİ ---
-with st.expander("📂 **VERİ TABANINI İNCELE (Hisse Kontrol)**", expanded=False):
-    if file_count > 0:
-        # Dosya seçici
-        file_options = sorted([os.path.basename(f) for f in excel_files_data])
-        selected_file = st.selectbox("İncelemek istediğiniz hisseyi seçin:", file_options)
-        
-        if selected_file:
-            file_path = os.path.join(DATA_DIR, selected_file)
-            try:
-                df_view = pd.read_excel(file_path)
+# 3. HİSSE LABORATUVARI (YENİ ÖZELLİK)
+st.subheader("🔬 Hisse Laboratuvarı (Grafik & Backtest)")
+
+if file_count > 0:
+    stock_options = sorted([os.path.basename(f).replace('.xlsx','') for f in excel_files_data])
+    selected_stock = st.selectbox("Analiz edilecek hisseyi seçin:", stock_options)
+    
+    if selected_stock:
+        file_path = os.path.join(DATA_DIR, f"{selected_stock}.xlsx")
+        try:
+            df = pd.read_excel(file_path)
+            # Sütun düzeltme
+            df.columns = [str(c).strip().upper() for c in df.columns]
+            col_map = {"DATE":["DATE","TARIH"], "CLOSING_TL":["CLOSING_TL","CLOSE"]}
+            for t, a in col_map.items():
+                for alias in a: 
+                    if alias in df.columns: df.rename(columns={alias:t}, inplace=True)
+            df['DATE'] = pd.to_datetime(df['DATE'])
+            
+            # --- BACKTEST ÇALIŞTIR ---
+            trades, equity, signals, hull_series, status = run_backtest_engine(df)
+            
+            # --- METRİKLER ---
+            total_trades = len(trades)
+            win_trades = sum(1 for t in trades if t['Kar/Zarar %'] > 0)
+            win_rate = (win_trades / total_trades * 100) if total_trades > 0 else 0
+            total_return = equity[-1] - 100
+            
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Son Fiyat", f"{df['CLOSING_TL'].iloc[-1]:.2f}", delta=None)
+            m2.metric("Mevcut Durum", status, delta_color="normal" if "AL" in status else "off")
+            m3.metric("Toplam Getiri (Hull)", f"%{total_return:.1f}")
+            m4.metric("Başarı Oranı", f"%{win_rate:.1f} ({total_trades} İşlem)")
+            
+            # --- GRAFİK ÇİZİMİ (PLOTLY) ---
+            tab1, tab2 = st.tabs(["📈 İnteraktif Grafik", "📋 İşlem Geçmişi"])
+            
+            with tab1:
+                fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
+                                    vertical_spacing=0.03, row_heights=[0.7, 0.3])
+
+                # Mum Grafiği
+                fig.add_trace(go.Candlestick(x=df['DATE'],
+                                open=df['OPEN_TL'] if 'OPEN_TL' in df else df['CLOSING_TL'],
+                                high=df['HIGH_TL'] if 'HIGH_TL' in df else df['CLOSING_TL'],
+                                low=df['LOW_TL'] if 'LOW_TL' in df else df['CLOSING_TL'],
+                                close=df['CLOSING_TL'], name='Fiyat'), row=1, col=1)
                 
-                k1, k2, k3 = st.columns(3)
-                k1.metric("Toplam Satır", len(df_view))
+                # Hull MA
+                fig.add_trace(go.Scatter(x=df['DATE'], y=hull_series, 
+                                         line=dict(color='orange', width=2), name='Hull MA (89)'), row=1, col=1)
+
+                # AL/SAT İşaretleri
+                buys = [s for s in signals if s['type']=='buy']
+                sells = [s for s in signals if s['type']=='sell']
                 
-                if 'DATE' in df_view.columns:
-                    last_date = pd.to_datetime(df_view['DATE'].iloc[-1]).strftime('%Y-%m-%d')
-                    k2.metric("Son Veri Tarihi", last_date)
+                fig.add_trace(go.Scatter(
+                    x=[s['date'] for s in buys], y=[s['price'] for s in buys],
+                    mode='markers', marker=dict(symbol='triangle-up', size=12, color='green'), name='AL'
+                ), row=1, col=1)
                 
-                if 'CLOSING_TL' in df_view.columns:
-                    last_price = df_view['CLOSING_TL'].iloc[-1]
-                    k3.metric("Son Fiyat", f"{last_price:.2f}")
+                fig.add_trace(go.Scatter(
+                    x=[s['date'] for s in sells], y=[s['price'] for s in sells],
+                    mode='markers', marker=dict(symbol='triangle-down', size=12, color='red'), name='SAT'
+                ), row=1, col=1)
 
-                st.caption("Son 10 Günlük Veri:")
-                st.dataframe(df_view.tail(10), use_container_width=True)
-                
-            except Exception as e:
-                st.error(f"Dosya okunamadı: {e}")
-    else:
-        st.info("Henüz veri indirilmemiş.")
+                # Hacim
+                if 'VOLUME_TL' in df:
+                    fig.add_trace(go.Bar(x=df['DATE'], y=df['VOLUME_TL'], name='Hacim', marker_color='blue'), row=2, col=1)
 
-st.markdown("---")
+                fig.update_layout(height=600, xaxis_rangeslider_visible=False, title=f"{selected_stock} Teknik Analizi")
+                st.plotly_chart(fig, use_container_width=True)
+            
+            with tab2:
+                if trades:
+                    trades_df = pd.DataFrame(trades)
+                    # Tarihleri düzelt
+                    trades_df['Giriş Tarihi'] = pd.to_datetime(trades_df['Giriş Tarihi']).dt.date
+                    # Çıkış tarihi 'Devam Ediyor' değilse formatla
+                    trades_df['Çıkış Tarihi'] = trades_df['Çıkış Tarihi'].apply(lambda x: x.date() if isinstance(x, (pd.Timestamp, datetime)) else x)
+                    
+                    st.dataframe(trades_df.style.format({
+                        'Giriş Fiyatı': '{:.2f}', 'Çıkış Fiyatı': '{:.2f}', 'Kar/Zarar %': '{:.2f}%'
+                    }).applymap(lambda x: 'color: green' if isinstance(x, (int, float)) and x > 0 else ('color: red' if isinstance(x, (int, float)) and x < 0 else ''), subset=['Kar/Zarar %']), use_container_width=True)
+                else:
+                    st.info("Bu stratejiyle henüz hiç işlem yapılmamış.")
 
-# BUTONLAR
-st.subheader("🛠️ Analiz Araçları")
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    st.info("📊 **Trend Analizleri**")
-    if st.button("🚀 Güçlü Trend & Kanal", use_container_width=True):
-        run_script("guclu_trend.py", "Güçlü Trend Analizi")
-    if st.button("🏆 Expert MA Dashboard", use_container_width=True):
-        run_script("expert_ma.py", "ExpertMA Puanlama")
-
-with col2:
-    st.info("🎯 **Kombine Sistemler**")
-    if st.button("💎 3+1 Süper Tarama", use_container_width=True):
-        run_script("super_3_1.py", "3+1 Süper Tarama")
-    if st.button("⚡ 3'lü Algo (Süre)", use_container_width=True):
-        run_script("super_tarama_v2.py", "Hull+BUM+TREF")
-    if st.button("🧪 RUA v3 + Güçlü Trend", use_container_width=True):
-        run_script("rua_trend.py", "RUA Trend Analizi")
-    if st.button("👑 4'lü Kombine (RUA+FRM+BUM+TREF)", type="primary", use_container_width=True):
-        run_script("kombine_tarama.py", "4'lü Kombine Tarama")
-
-with col3:
-    st.info("📈 **Teknik Göstergeler**")
-    if st.button("📢 Hacimli EMA Cross", use_container_width=True):
-        run_script("hacimli_ema.py", "Hacimli EMA Cross")
-    if st.button("📏 LinReg & EMA", use_container_width=True):
-        run_script("linreg_extended.py", "LinReg Extended")
-    if st.button("🧬 Hibrit Tarama V4", use_container_width=True):
-        run_script("hibo_v4.py", "Hibo V4")
-
-st.markdown("---")
-
-# SONUÇ GÖRÜNTÜLEME
-latest_result_file = get_latest_report_file()
-
-if latest_result_file:
-    st.header("📊 Son Analiz Sonuçları")
-    st.caption(f"Dosya: {os.path.basename(latest_result_file)}")
-    try:
-        xl = pd.ExcelFile(latest_result_file)
-        sheet_names = xl.sheet_names
-        
-        selected_sheet = st.selectbox("Görüntülenecek Sayfa:", sheet_names)
-        df_sheet = pd.read_excel(latest_result_file, sheet_name=selected_sheet)
-        st.dataframe(df_sheet, use_container_width=True)
-    except: st.warning("Dosya henüz hazır değil veya okunamadı.")
+        except Exception as e: st.error(f"Hata: {e}")
 else:
-    st.info("Analiz sonucu bekleniyor...")
+    st.info("Laboratuvarı kullanmak için önce veri indirin.")
 
 st.markdown("---")
-st.subheader("🔄 Veri Tabanı")
 
-c_upd, c_reset = st.columns([2, 1])
+# 4. TARAMA BUTONLARI
+st.subheader("🚀 Otomatik Taramalar")
+c1, c2, c3 = st.columns(3)
+with c1:
+    st.markdown("**Trend**")
+    if st.button("Güçlü Trend Analizi", use_container_width=True): run_script("guclu_trend.py", "Trend")
+    if st.button("Expert MA Puanlama", use_container_width=True): run_script("expert_ma.py", "ExpertMA")
+with c2:
+    st.markdown("**Kombine**")
+    if st.button("3+1 Süper Tarama", use_container_width=True): run_script("super_3_1.py", "3+1")
+    if st.button("3'lü Algo (Süre)", use_container_width=True): run_script("super_tarama_v2.py", "3'lü")
+    if st.button("RUA + Trend", use_container_width=True): run_script("rua_trend.py", "RUA Trend")
+    if st.button("4'lü Kombine", type="primary", use_container_width=True): run_script("kombine_tarama.py", "4'lü")
+with c3:
+    st.markdown("**Teknik**")
+    if st.button("Hacimli EMA Cross", use_container_width=True): run_script("hacimli_ema.py", "EMA")
+    if st.button("LinReg Extended", use_container_width=True): run_script("linreg_extended.py", "LinReg")
+    if st.button("Hibrit V4", use_container_width=True): run_script("hibo_v4.py", "Hibo")
 
-with c_upd:
-    if st.button("🌍 Verileri Güncelle (Yahoo - 10 Yıl)", type="primary", use_container_width=True):
-        run_script("FinDow_Otomatik.py", "Veri İndirme Robotu")
+st.markdown("---")
+# SONUÇ GÖSTERME
+latest = get_latest_report_file()
+if latest:
+    st.subheader(f"📊 Sonuç: {os.path.basename(latest)}")
+    try:
+        xl = pd.ExcelFile(latest)
+        sheet = st.selectbox("Sayfa:", xl.sheet_names)
+        st.dataframe(pd.read_excel(latest, sheet_name=sheet), use_container_width=True)
+    except: pass
 
-# Ana Sayfa Altındaki SIFIRLAMA (Alternatif Erişim)
-with c_reset:
-    with st.popover("🗑️ Hızlı Sıfırla"):
-        st.warning("Veriler silinsin mi?")
-        if st.button("EVET", type="secondary", use_container_width=True):
-            deleted = reset_system()
-            st.toast(f"Temizlendi!", icon="🧹")
-            time.sleep(1)
-            st.rerun()
+st.markdown("---")
+if st.button("🌍 Verileri Güncelle (Yahoo - 10 Yıl)", type="primary", use_container_width=True):
+    run_script("FinDow_Otomatik.py", "İndirme")
