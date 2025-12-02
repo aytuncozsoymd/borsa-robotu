@@ -5,7 +5,7 @@ import subprocess
 import glob
 import time
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- BULUT UYUMLU AYARLAR ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -54,10 +54,6 @@ def run_script(script_name, display_name):
         
         if process.returncode == 0:
             status_area.success(f"✅ {display_name} tamamlandı! Sonuçlar aşağıdadır.")
-            
-            # Otomatik yenileme yerine kullanıcıyı aşağı yönlendiriyoruz.
-            # Dosya kontrolünü aşağıda yapıyoruz.
-
             with st.expander("İşlem Kayıtlarını Gör (Log)", expanded=False):
                 st.code(stdout)
         else:
@@ -77,7 +73,7 @@ def get_latest_files_list():
 
 st.title("🎛️ Borsa Algoritmik Komuta Paneli")
 
-# DURUM GÖSTERGESİ
+# DURUM GÖSTERGESİ (SAAT AYARLI)
 excel_files_data = glob.glob(os.path.join(DATA_DIR, '*.xlsx'))
 file_count = len(excel_files_data)
 c1, c2 = st.columns([3, 1])
@@ -92,8 +88,10 @@ with c1:
 with c2:
     if file_count > 0:
         latest_data = max(excel_files_data, key=os.path.getmtime)
-        last_update = datetime.fromtimestamp(os.path.getmtime(latest_data)).strftime('%H:%M')
-        st.info(f"🕒 Veri Saati: **{last_update}**")
+        # GMT+3 AYARI (Dosya saati + 3 saat)
+        last_update_ts = datetime.fromtimestamp(os.path.getmtime(latest_data)) + timedelta(hours=3)
+        last_update_str = last_update_ts.strftime('%H:%M')
+        st.info(f"🕒 Veri Saati (TR): **{last_update_str}**")
 
 st.markdown("---")
 
@@ -130,6 +128,8 @@ with col1:
         run_script("guclu_trend.py", "Güçlü Trend Analizi")
     if st.button("🏆 Expert MA Dashboard", use_container_width=True):
         run_script("expert_ma.py", "ExpertMA Puanlama")
+    if st.button("🛡️ Hull + ATR (AL / NAKIT)", use_container_width=True):
+        run_script("hull_analiz.py", "Hull Trend Analizi")
 
 with col2:
     st.info("🎯 **Kombine Sistemler**")
@@ -137,9 +137,10 @@ with col2:
         run_script("super_3_1.py", "3+1 Süper Tarama")
     if st.button("⚡ 3'lü Algo (Süre)", use_container_width=True):
         run_script("super_tarama_v2.py", "Hull+BUM+TREF")
-    # YENİ EKLENEN BUTON:
     if st.button("🧪 RUA v3 + Güçlü Trend", use_container_width=True):
         run_script("rua_trend.py", "RUA Trend Analizi")
+    if st.button("👑 4'lü Kombine (RUA+FRM+BUM+TREF)", type="primary", use_container_width=True):
+        run_script("kombine_tarama.py", "4'lü Kombine Tarama")
 
 with col3:
     st.info("📈 **Teknik Göstergeler**")
@@ -152,34 +153,25 @@ with col3:
 
 st.markdown("---")
 
-# --- SONUÇ GÖRÜNTÜLEME ALANI (SABİT) ---
+# SONUÇ GÖRÜNTÜLEME
 latest_result_file = get_latest_report_file()
 
 if latest_result_file:
     st.header("📊 Son Analiz Sonuçları")
     st.caption(f"Dosya: {os.path.basename(latest_result_file)}")
-    
     try:
         xl = pd.ExcelFile(latest_result_file)
         sheet_names = xl.sheet_names
-        
-        # Sayfa Seçici
-        if len(sheet_names) > 1:
-            selected_sheet = st.selectbox("Görüntülenecek Sayfa:", sheet_names)
-        else:
-            selected_sheet = sheet_names[0]
-        
+        selected_sheet = st.selectbox("Görüntülenecek Sayfa:", sheet_names)
         df_sheet = pd.read_excel(latest_result_file, sheet_name=selected_sheet)
         st.dataframe(df_sheet, use_container_width=True)
-        
     except Exception as e:
-        st.warning(f"Dosya okunamadı (Format uyumsuz olabilir). Soldan indirip açmayı deneyin.")
+        st.warning("Dosya henüz oluşturuluyor veya okunamadı. Lütfen bekleyip 'Listeyi Yenile' yapın.")
 else:
-    st.info("Analiz sonucu bekleniyor...")
+    st.info("Henüz bir analiz sonucu yok. Yukarıdaki butonlardan birine basarak analiz yapabilirsiniz.")
 
 st.markdown("---")
 st.subheader("🔄 Veri Tabanı")
 
 if st.button("🌍 Verileri Güncelle (Yahoo Finance - 10 Yıllık)", type="primary", use_container_width=True):
     run_script("FinDow_Otomatik.py", "Veri İndirme Robotu")
-
