@@ -34,7 +34,9 @@ def run_script(script_name, display_name):
         st.error(f"❌ Dosya bulunamadı: {script_name}")
         return
 
+    file_before = get_latest_report_file()
     status_area = st.empty()
+    
     status_area.info(f"⏳ {display_name} çalıştırılıyor... Lütfen bekleyin.")
     
     try:
@@ -51,13 +53,13 @@ def run_script(script_name, display_name):
         stdout, stderr = process.communicate()
         
         if process.returncode == 0:
-            status_area.success(f"✅ {display_name} tamamlandı! Aşağıdaki panelden sonucu inceleyebilirsiniz.")
+            status_area.success(f"✅ {display_name} tamamlandı! Sonuçlar aşağıdadır.")
+            
+            # Otomatik yenileme yerine kullanıcıyı aşağı yönlendiriyoruz.
+            # Dosya kontrolünü aşağıda yapıyoruz.
+
             with st.expander("İşlem Kayıtlarını Gör (Log)", expanded=False):
                 st.code(stdout)
-            
-            # İşlem bitince sayfayı yenile ki yeni dosya hemen görünsün (Opsiyonel)
-            time.sleep(1)
-            # st.rerun() # Bazen döngüye sokabilir, kapalı kalsın.
         else:
             status_area.error("⚠️ Bir hata oluştu!")
             with st.expander("Hata Detayları"):
@@ -81,7 +83,7 @@ file_count = len(excel_files_data)
 c1, c2 = st.columns([3, 1])
 with c1:
     if file_count > 10:
-        st.success(f"✅ **SİSTEM HAZIR:** {file_count} adet hisse verisi analize hazır.")
+        st.success(f"✅ **SİSTEM HAZIR:** {file_count} adet hisse verisi mevcut.")
     elif file_count > 0:
         st.warning(f"⚠️ **EKSİK VERİ:** Sadece {file_count} adet veri var.")
     else:
@@ -128,6 +130,8 @@ with col1:
         run_script("guclu_trend.py", "Güçlü Trend Analizi")
     if st.button("🏆 Expert MA Dashboard", use_container_width=True):
         run_script("expert_ma.py", "ExpertMA Puanlama")
+    if st.button("🛡️ Hull + ATR (AL / NAKIT)", use_container_width=True):
+        run_script("hull_analiz.py", "Hull Trend Analizi")
 
 with col2:
     st.info("🎯 **Kombine Sistemler**")
@@ -135,8 +139,9 @@ with col2:
         run_script("super_3_1.py", "3+1 Süper Tarama")
     if st.button("⚡ 3'lü Algo (Süre)", use_container_width=True):
         run_script("super_tarama_v2.py", "Hull+BUM+TREF")
-    if st.button("🧬 Hibrit Tarama V4", use_container_width=True):
-        run_script("hibo_v4.py", "Hibo V4")
+    # YENİ EKLENEN BUTON:
+    if st.button("🧪 RUA v3 + Güçlü Trend", use_container_width=True):
+        run_script("rua_trend.py", "RUA Trend Analizi")
 
 with col3:
     st.info("📈 **Teknik Göstergeler**")
@@ -144,34 +149,35 @@ with col3:
         run_script("hacimli_ema.py", "Hacimli EMA Cross")
     if st.button("📏 LinReg & EMA", use_container_width=True):
         run_script("linreg_extended.py", "LinReg Extended")
+    if st.button("🧬 Hibrit Tarama V4", use_container_width=True):
+        run_script("hibo_v4.py", "Hibo V4")
 
 st.markdown("---")
 
 # --- SONUÇ GÖRÜNTÜLEME ALANI (SABİT) ---
-# Burası butonların dışında olduğu için sayfa yenilense de kaybolmaz.
-
 latest_result_file = get_latest_report_file()
 
 if latest_result_file:
     st.header("📊 Son Analiz Sonuçları")
-    st.info(f"Görüntülenen Dosya: **{os.path.basename(latest_result_file)}**")
+    st.caption(f"Dosya: {os.path.basename(latest_result_file)}")
     
     try:
-        # Excel dosyasını yükle
         xl = pd.ExcelFile(latest_result_file)
         sheet_names = xl.sheet_names
         
-        # Sayfa Seçici (Burayı değiştirince artık tablo kaybolmayacak!)
-        selected_sheet = st.selectbox("Görüntülemek istediğiniz sayfayı seçin:", sheet_names)
+        # Sayfa Seçici
+        if len(sheet_names) > 1:
+            selected_sheet = st.selectbox("Görüntülenecek Sayfa:", sheet_names)
+        else:
+            selected_sheet = sheet_names[0]
         
-        # Seçilen sayfayı oku ve göster
         df_sheet = pd.read_excel(latest_result_file, sheet_name=selected_sheet)
         st.dataframe(df_sheet, use_container_width=True)
         
     except Exception as e:
-        st.warning("Dosya henüz oluşturuluyor veya okunamadı. Lütfen bekleyip 'Listeyi Yenile' yapın.")
+        st.warning(f"Dosya okunamadı (Format uyumsuz olabilir). Soldan indirip açmayı deneyin.")
 else:
-    st.info("Henüz bir analiz sonucu yok. Yukarıdaki butonlardan birine basarak analiz yapabilirsiniz.")
+    st.info("Analiz sonucu bekleniyor...")
 
 st.markdown("---")
 st.subheader("🔄 Veri Tabanı")
