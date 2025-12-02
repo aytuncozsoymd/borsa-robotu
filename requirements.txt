@@ -1,0 +1,11 @@
+streamlit
+pandas
+numpy
+openpyxl
+yfinance
+tvdatafeed
+scikit-learn
+scipy
+tqdm
+colorama
+xlsxwriter
