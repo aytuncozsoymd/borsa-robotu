@@ -130,8 +130,6 @@ with col1:
         run_script("guclu_trend.py", "Güçlü Trend Analizi")
     if st.button("🏆 Expert MA Dashboard", use_container_width=True):
         run_script("expert_ma.py", "ExpertMA Puanlama")
-    if st.button("🛡️ Hull + ATR (AL / NAKIT)", use_container_width=True):
-        run_script("hull_analiz.py", "Hull Trend Analizi")
 
 with col2:
     st.info("🎯 **Kombine Sistemler**")
@@ -184,3 +182,4 @@ st.subheader("🔄 Veri Tabanı")
 
 if st.button("🌍 Verileri Güncelle (Yahoo Finance - 10 Yıllık)", type="primary", use_container_width=True):
     run_script("FinDow_Otomatik.py", "Veri İndirme Robotu")
+
