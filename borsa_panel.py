@@ -19,7 +19,11 @@ if not os.path.exists(DATA_DIR):
 
 st.set_page_config(page_title="Borsa Komuta Merkezi Pro", page_icon="🚀", layout="wide")
 
-# --- HESAPLAMA FONKSİYONLARI ---
+# ==================== MATEMATİKSEL FONKSİYONLAR ====================
+
+def calculate_ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()
+
 def calculate_wma(series, length):
     weights = np.arange(1, length + 1)
     return series.rolling(length).apply(lambda x: np.dot(x, weights) / weights.sum(), raw=True)
@@ -30,33 +34,144 @@ def calculate_hull(series, length=89):
     raw_hma = 2 * wma_half - wma_full
     return calculate_wma(raw_hma, int(np.sqrt(length)))
 
-def run_backtest_engine(df):
-    """Hull Stratejisi Backtest Motoru"""
+def calculate_atr(df, length=14):
+    if 'HIGH_TL' not in df.columns or 'LOW_TL' not in df.columns:
+        return df['CLOSING_TL'].diff().abs().ewm(alpha=1/length, adjust=False).mean()
+    high = df['HIGH_TL']; low = df['LOW_TL']; close = df['CLOSING_TL']
+    tr = pd.concat([high - low, abs(high - close.shift(1)), abs(low - close.shift(1))], axis=1).max(axis=1)
+    return tr.ewm(alpha=1/length, adjust=False).mean()
+
+def calculate_custom_tema(series, period):
+    e1 = series.ewm(span=period, adjust=False).mean()
+    e2 = e1.ewm(span=period, adjust=False).mean()
+    e3 = e2.ewm(span=period, adjust=False).mean()
+    return (3 * e1) - (3 * e2) + e3
+
+def calculate_rsi(series, period=14):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(period).mean()
+    rs = gain / loss
+    return (100 - (100 / (1 + rs))).fillna(50)
+
+def calculate_mfi(df, period=14):
+    if 'VOLUME_TL' not in df.columns or 'HIGH_TL' not in df.columns:
+        return calculate_rsi(df['CLOSING_TL'], period)
+    tp = (df['HIGH_TL'] + df['LOW_TL'] + df['CLOSING_TL']) / 3
+    rmf = tp * df['VOLUME_TL']
+    pos = np.where(tp > tp.shift(1), rmf, 0); neg = np.where(tp < tp.shift(1), rmf, 0)
+    p_sum = pd.Series(pos).rolling(period).sum()
+    n_sum = pd.Series(neg).rolling(period).sum()
+    mfi = 100 - (100 / (1 + p_sum/n_sum))
+    return mfi.fillna(50)
+
+def calculate_bollinger_bands(series, period=20, std_dev=2):
+    sma = series.rolling(period).mean()
+    std = series.rolling(period).std()
+    return sma + (std * std_dev), sma - (std * std_dev)
+
+# ==================== BACKTEST MOTORU (GELİŞMİŞ) ====================
+
+def run_backtest_engine(df, strategy_name):
     close = df['CLOSING_TL']
-    hull = calculate_hull(close, 89) # Standart Hull 89
+    high = df['HIGH_TL'] if 'HIGH_TL' in df.columns else close
+    low = df['LOW_TL'] if 'LOW_TL' in df.columns else close
     
     trades = []
     in_position = False
     entry_price = 0
     entry_date = None
-    equity = [100] # Başlangıç bakiyesi 100 birim
+    equity = [100]
+    signals = []
+    plot_data = {} # Grafik için ek veriler
     
-    signals = [] # Grafik için sinyal noktaları
+    # --- STRATEJİ HAZIRLIKLARI ---
     
-    for i in range(100, len(df)):
+    if strategy_name == "FRM (Hull + ATR)":
+        wma10 = calculate_wma(close, 10)
+        hull = calculate_wma(wma10, 89)
+        atr = calculate_atr(df, 14)
+        plot_data = {'line1': hull, 'name1': 'Hull MA (89)', 'color1': 'orange'}
+        
+    elif strategy_name == "BUM (TEMA Cross)":
+        ma1 = calculate_custom_tema(close, 34)
+        ma2 = calculate_custom_tema(close, 68)
+        plot_data = {'line1': ma1, 'name1': 'TEMA 34', 'color1': 'cyan',
+                     'line2': ma2, 'name2': 'TEMA 68', 'color2': 'magenta'}
+        
+    elif strategy_name == "TREF (Momentum)":
+        rsi = calculate_rsi(close)
+        mfi = calculate_mfi(df)
+        tref_mom = (rsi + mfi) / 2
+        ema5 = calculate_ema(close, 5)
+        # Grafik için Momentum (Ayrı panele çizilir normalde ama burada fiyat üstüne EMA5 çizelim)
+        plot_data = {'line1': ema5, 'name1': 'EMA 5', 'color1': 'yellow'}
+        
+    elif strategy_name == "RUA (Dip Avcısı)":
+        rsi = calculate_rsi(close)
+        mfi = calculate_mfi(df)
+        rua = (rsi + mfi) / 2
+        bb_up, bb_low = calculate_bollinger_bands(rua)
+        # RUA bir osilatördür, fiyat üzerine çizilmez. Grafik kısmında özel işlenmeli.
+        # Biz burada referans olarak boş geçelim, sinyalleri işleyelim.
+        pass
+
+    # --- SİMÜLASYON DÖNGÜSÜ ---
+    
+    start_idx = 100 # İndikatörlerin oturması için pay
+    
+    for i in range(start_idx, len(df)):
         price = close.iloc[i]
         date = df['DATE'].iloc[i]
-        h_val = hull.iloc[i]
         
-        # AL SİNYALİ (Fiyat Hull'u yukarı kesti)
-        if price > h_val and not in_position:
+        is_buy = False
+        is_sell = False
+        
+        # --- SİNYAL KONTROLLERİ ---
+        
+        if strategy_name == "FRM (Hull + ATR)":
+            h_val = hull.iloc[i]
+            a_val = atr.iloc[i] if atr is not None else 0
+            prev_close = close.iloc[i-1]
+            
+            # FRM Mantığı: Hull üstünde ve ATR kadar kopmuşsa AL
+            if price > h_val and price > (prev_close + a_val): is_buy = True
+            elif price < h_val and price < (prev_close - a_val): is_sell = True
+            
+        elif strategy_name == "BUM (TEMA Cross)":
+            m1_val = ma1.iloc[i]; m2_val = ma2.iloc[i]
+            m1_prev = ma1.iloc[i-1]; m2_prev = ma2.iloc[i-1]
+            
+            if m1_prev <= m2_prev and m1_val > m2_val: is_buy = True
+            elif m1_prev >= m2_prev and m1_val < m2_val: is_sell = True
+            
+        elif strategy_name == "TREF (Momentum)":
+            mom_val = tref_mom.iloc[i]
+            mom_prev = tref_mom.iloc[i-1]
+            e5_val = ema5.iloc[i]; e5_prev = ema5.iloc[i-1]
+            
+            # TREF: Momentum 50'yi yukarı kesti ve EMA5 artıyor
+            if mom_val > 50 and mom_prev <= 50 and e5_val > e5_prev: is_buy = True
+            elif mom_val < 40: is_sell = True
+            
+        elif strategy_name == "RUA (Dip Avcısı)":
+            r_val = rua.iloc[i]; r_prev = rua.iloc[i-1]
+            l_val = bb_low.iloc[i]; l_prev = bb_low.iloc[i-1]
+            u_val = bb_up.iloc[i]; u_prev = bb_up.iloc[i-1]
+            
+            # RUA: Alt bandı yukarı kesti (AL), Üst bandı aşağı kesti (SAT)
+            if r_prev < l_prev and r_val > l_val: is_buy = True
+            elif r_prev > u_prev and r_val < u_val: is_sell = True
+
+        # --- İŞLEM YÖNETİMİ ---
+        
+        if is_buy and not in_position:
             in_position = True
             entry_price = price
             entry_date = date
             signals.append({'date': date, 'price': price, 'type': 'buy'})
             
-        # SAT SİNYALİ (Fiyat Hull'u aşağı kesti)
-        elif price < h_val and in_position:
+        elif is_sell and in_position:
             in_position = False
             exit_price = price
             pnl = ((exit_price - entry_price) / entry_price) * 100
@@ -70,16 +185,15 @@ def run_backtest_engine(df):
             equity.append(equity[-1] * (1 + pnl/100))
             signals.append({'date': date, 'price': price, 'type': 'sell'})
             
-    # Açık pozisyon varsa son durum
+    # Açık Pozisyon Kontrolü
     current_status = "NAKİT"
     if in_position:
         current_status = "POZİSYONDA (AL)"
-        # Sanal kapanış
         pnl = ((close.iloc[-1] - entry_price) / entry_price) * 100
         trades.append({'Giriş Tarihi': entry_date, 'Çıkış Tarihi': 'Devam Ediyor', 
                        'Giriş Fiyatı': entry_price, 'Çıkış Fiyatı': close.iloc[-1], 'Kar/Zarar %': pnl})
         
-    return trades, equity, signals, hull, current_status
+    return trades, equity, signals, plot_data, current_status
 
 # --- PANEL FONKSİYONLARI ---
 def get_latest_report_file():
@@ -154,14 +268,21 @@ with st.sidebar:
         if st.button("EVET, SİL", type="primary"):
             d = reset_system(); st.toast(f"{d} dosya silindi!"); time.sleep(1); st.rerun()
 
-# 3. HİSSE LABORATUVARI (YENİ ÖZELLİK)
+# 3. HİSSE LABORATUVARI (BACKTEST)
 st.subheader("🔬 Hisse Laboratuvarı (Grafik & Backtest)")
 
 if file_count > 0:
-    stock_options = sorted([os.path.basename(f).replace('.xlsx','') for f in excel_files_data])
-    selected_stock = st.selectbox("Analiz edilecek hisseyi seçin:", stock_options)
+    col_sel1, col_sel2 = st.columns([1, 1])
     
-    if selected_stock:
+    with col_sel1:
+        stock_options = sorted([os.path.basename(f).replace('.xlsx','') for f in excel_files_data])
+        selected_stock = st.selectbox("Analiz edilecek hisseyi seçin:", stock_options)
+        
+    with col_sel2:
+        strategies = ["FRM (Hull + ATR)", "BUM (TEMA Cross)", "TREF (Momentum)", "RUA (Dip Avcısı)"]
+        selected_strategy = st.selectbox("Uygulanacak Strateji:", strategies)
+    
+    if selected_stock and selected_strategy:
         file_path = os.path.join(DATA_DIR, f"{selected_stock}.xlsx")
         try:
             df = pd.read_excel(file_path)
@@ -174,7 +295,7 @@ if file_count > 0:
             df['DATE'] = pd.to_datetime(df['DATE'])
             
             # --- BACKTEST ÇALIŞTIR ---
-            trades, equity, signals, hull_series, status = run_backtest_engine(df)
+            trades, equity, signals, plot_data, status = run_backtest_engine(df, selected_strategy)
             
             # --- METRİKLER ---
             total_trades = len(trades)
@@ -185,7 +306,7 @@ if file_count > 0:
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Son Fiyat", f"{df['CLOSING_TL'].iloc[-1]:.2f}", delta=None)
             m2.metric("Mevcut Durum", status, delta_color="normal" if "AL" in status else "off")
-            m3.metric("Toplam Getiri (Hull)", f"%{total_return:.1f}")
+            m3.metric("Toplam Getiri", f"%{total_return:.1f}")
             m4.metric("Başarı Oranı", f"%{win_rate:.1f} ({total_trades} İşlem)")
             
             # --- GRAFİK ÇİZİMİ (PLOTLY) ---
@@ -202,9 +323,15 @@ if file_count > 0:
                                 low=df['LOW_TL'] if 'LOW_TL' in df else df['CLOSING_TL'],
                                 close=df['CLOSING_TL'], name='Fiyat'), row=1, col=1)
                 
-                # Hull MA
-                fig.add_trace(go.Scatter(x=df['DATE'], y=hull_series, 
-                                         line=dict(color='orange', width=2), name='Hull MA (89)'), row=1, col=1)
+                # Strateji İndikatörleri (Varsa)
+                if 'line1' in plot_data:
+                    fig.add_trace(go.Scatter(x=df['DATE'], y=plot_data['line1'], 
+                                             line=dict(color=plot_data.get('color1', 'orange'), width=2), 
+                                             name=plot_data.get('name1', 'Ind 1')), row=1, col=1)
+                if 'line2' in plot_data:
+                    fig.add_trace(go.Scatter(x=df['DATE'], y=plot_data['line2'], 
+                                             line=dict(color=plot_data.get('color2', 'cyan'), width=2), 
+                                             name=plot_data.get('name2', 'Ind 2')), row=1, col=1)
 
                 # AL/SAT İşaretleri
                 buys = [s for s in signals if s['type']=='buy']
@@ -224,15 +351,13 @@ if file_count > 0:
                 if 'VOLUME_TL' in df:
                     fig.add_trace(go.Bar(x=df['DATE'], y=df['VOLUME_TL'], name='Hacim', marker_color='blue'), row=2, col=1)
 
-                fig.update_layout(height=600, xaxis_rangeslider_visible=False, title=f"{selected_stock} Teknik Analizi")
+                fig.update_layout(height=600, xaxis_rangeslider_visible=False, title=f"{selected_stock} - {selected_strategy}")
                 st.plotly_chart(fig, use_container_width=True)
             
             with tab2:
                 if trades:
                     trades_df = pd.DataFrame(trades)
-                    # Tarihleri düzelt
                     trades_df['Giriş Tarihi'] = pd.to_datetime(trades_df['Giriş Tarihi']).dt.date
-                    # Çıkış tarihi 'Devam Ediyor' değilse formatla
                     trades_df['Çıkış Tarihi'] = trades_df['Çıkış Tarihi'].apply(lambda x: x.date() if isinstance(x, (pd.Timestamp, datetime)) else x)
                     
                     st.dataframe(trades_df.style.format({
