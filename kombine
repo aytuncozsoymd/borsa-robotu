@@ -1,0 +1,172 @@
+import os
+import pandas as pd
+import numpy as np
+import glob
+from datetime import datetime
+import colorama
+from colorama import Fore, Style
+
+colorama.init(autoreset=True)
+
+# ==================== AYARLAR ====================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, 'DATAson')
+OUTPUT_DIR = BASE_DIR
+
+if not os.path.exists(DATA_DIR):
+    os.makedirs(DATA_DIR)
+
+OUTPUT_FILE = os.path.join(OUTPUT_DIR, f'Kombine_Sinyal_Tablosu_{datetime.now().strftime("%Y-%m-%d-%H-%M")}.xlsx')
+
+# ==================== YARDIMCI FONKSİYONLAR ====================
+def load_stock_df(file_path):
+    try:
+        df = pd.read_excel(file_path)
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        col_map = {
+            "DATE": ["DATE", "TARIH"], "CLOSING_TL": ["CLOSING_TL", "CLOSE", "KAPANIS"],
+            "HIGH_TL": ["HIGH_TL", "HIGH"], "LOW_TL": ["LOW_TL", "LOW"], "VOLUME_TL": ["VOLUME_TL", "VOL"]
+        }
+        for t, a in col_map.items():
+            if t not in df.columns:
+                for alias in a:
+                    if alias in df.columns: df.rename(columns={alias: t}, inplace=True); break
+        
+        if "DATE" in df.columns:
+            df["DATE"] = pd.to_datetime(df["DATE"], errors='coerce')
+            df.dropna(subset=["DATE", "CLOSING_TL"], inplace=True)
+            df.sort_values("DATE", inplace=True)
+        return df if "CLOSING_TL" in df.columns else None
+    except: return None
+
+# --- MATEMATİKSEL ---
+def calculate_ema(s, p): return s.ewm(span=p, adjust=False).mean()
+def calculate_wma(s, l): w=np.arange(1,l+1); return s.rolling(l).apply(lambda x: np.dot(x,w)/w.sum(), raw=True)
+def calculate_atr(df, l=14):
+    if 'HIGH_TL' not in df: return df['CLOSING_TL'].diff().abs().ewm(alpha=1/l).mean()
+    tr=pd.concat([df['HIGH_TL']-df['LOW_TL'], (df['HIGH_TL']-df['CLOSING_TL'].shift(1)).abs(), (df['LOW_TL']-df['CLOSING_TL'].shift(1)).abs()], axis=1).max(axis=1)
+    return tr.ewm(alpha=1/l).mean()
+def calculate_rsi(s, p=14): d=s.diff(); g=(d.where(d>0,0)).rolling(p).mean(); l=(-d.where(d<0,0)).rolling(p).mean(); return (100-(100/(1+g/l))).fillna(50)
+def calculate_rma(s, l): a=1/l; r=np.zeros_like(s); r[0]=s[0]; [r.__setitem__(i, a*s[i]+(1-a)*r[i-1]) for i in range(1,len(s))]; return r
+
+def calculate_tref_mom(df, l=13):
+    c=df['CLOSING_TL'].values; ch=np.diff(c, prepend=c[0])
+    u=calculate_rma(np.maximum(ch,0),l); d=calculate_rma(-np.minimum(ch,0),l)
+    with np.errstate(divide='ignore'): rsi=100-(100/(1+u/d))
+    rsi=np.nan_to_num(rsi, nan=50.0)
+    if 'VOLUME_TL' in df:
+        tp=(df['HIGH_TL'].values+df['LOW_TL'].values+c)/3; mf=tp*df['VOLUME_TL'].values
+        p=np.where(tp>np.roll(tp,1),mf,0); n=np.where(tp<np.roll(tp,1),mf,0); p[0]=n[0]=0
+        ps=pd.Series(p).rolling(l).sum().values; ns=pd.Series(n).rolling(l).sum().values
+        with np.errstate(divide='ignore'): mfi=100-(100/(1+ps/ns))
+        return (rsi+np.nan_to_num(mfi, nan=50.0))/2
+    return rsi
+
+def calculate_bollinger(s, p=20, d=2): m=s.rolling(p).mean(); std=s.rolling(p).std(); return m+(std*d), m-(std*d)
+
+# --- ANALİZLER ---
+def analyze_rua(df):
+    if len(df)<50: return "-",0
+    c=df['CLOSING_TL']; rsi=calculate_rsi(c)
+    if 'VOLUME_TL' in df:
+        tp=(df['HIGH_TL']+df['LOW_TL']+c)/3; rmf=tp*df['VOLUME_TL']
+        p=np.where(tp>tp.shift(1),rmf,0); n=np.where(tp<tp.shift(1),rmf,0)
+        mfi=100-(100/(1+pd.Series(p).rolling(14).sum()/pd.Series(n).rolling(14).sum())); rua=(rsi+mfi.fillna(50))/2
+    else: rua=rsi
+    u,l=calculate_bollinger(rua)
+    cr=rua.iloc[-1]; cl=l.iloc[-1]; pr=rua.iloc[-2]; pl=l.iloc[-2]
+    st="-"; dy=0
+    if cr<=cl: st="DİP (AL)"
+    elif pr<pl and cr>cl: st="DÖNÜŞ (AL)"
+    
+    if "AL" in st:
+        for i in range(len(df)-1,-1,-1):
+            if rua.iloc[i]<=l.iloc[i] or (i>0 and rua.iloc[i-1]<l.iloc[i-1] and rua.iloc[i]>l.iloc[i]): dy+=1
+            else: break
+    return st, dy
+
+def analyze_frm(df):
+    if len(df)<100: return "-",0
+    c=df['CLOSING_TL']; h=calculate_wma(calculate_wma(c,10),89); atr=calculate_atr(df)
+    std=c.rolling(20).std(); sideways=atr<(0.5*std) if atr is not None else False
+    cond=(c>h); cond=cond&(c>(c.shift(1)+atr))&(~sideways) if atr is not None else cond
+    in_pos=False; idx=0
+    for i in range(len(df)):
+        if cond.iloc[i]:
+            if not in_pos: in_pos=True; idx=i
+        elif c.iloc[i]<h.iloc[i]: in_pos=False
+    if in_pos: return "AL", len(df)-idx
+    return "-", 0
+
+def analyze_bum(df):
+    if len(df)<80: return "-",0
+    def tema(s,p): e1=s.ewm(span=p).mean(); e2=e1.ewm(span=p).mean(); e3=e2.ewm(span=p).mean(); return 3*e1-3*e2+e3
+    m1=tema(df['CLOSING_TL'],34); m2=tema(df['CLOSING_TL'],68)
+    if m1.iloc[-1]>m2.iloc[-1]:
+        dy=0; v1=m1.values; v2=m2.values
+        for i in range(len(df)-1,-1,-1):
+            if v1[i]>v2[i]: dy+=1
+            else: break
+        return "AL", dy
+    return "-", 0
+
+def analyze_tref(df):
+    if len(df)<60: return "-",0
+    tm=calculate_tref_mom(df); e5=df['CLOSING_TL'].ewm(span=5).mean().diff()
+    in_pos=False; idx=0
+    for i in range(max(1,len(df)-200), len(df)):
+        if tm[i]>50 and tm[i-1]<=50 and e5.iloc[i]>0: in_pos=True; idx=i
+        elif tm[i]<40: in_pos=False
+    if in_pos: return "AL", len(df)-idx
+    return "-", 0
+
+# ==================== MAIN ====================
+def main():
+    print("4'lü Kombine Tarama Başlıyor...")
+    files = glob.glob(os.path.join(DATA_DIR, '*.xlsx'))
+    results = []
+    
+    for f in files:
+        try:
+            df = load_stock_df(f)
+            if df is None: continue
+            hisse = os.path.basename(f).replace('.xlsx','')
+            
+            s1,d1 = analyze_rua(df)
+            s2,d2 = analyze_frm(df)
+            s3,d3 = analyze_bum(df)
+            s4,d4 = analyze_tref(df)
+            
+            # Sinyal varsa veya bir tanesi bile AL ise ekle
+            if "AL" in s1 or s2=="AL" or s3=="AL" or s4=="AL":
+                results.append({
+                    'Hisse': hisse, 'Fiyat': df['CLOSING_TL'].iloc[-1],
+                    'RUA': s1, 'RUA_Gün': d1,
+                    'FRM': s2, 'FRM_Gün': d2,
+                    'BUM': s3, 'BUM_Gün': d3,
+                    'TREF': s4, 'TREF_Gün': d4
+                })
+        except: continue
+        
+    # --- KRİTİK DÜZELTME: DOSYA OLUŞTURMA GARANTİSİ ---
+    if not results:
+        # Sonuç yoksa boş ama uyarı içeren bir dosya oluştur
+        results.append({'Hisse': 'SONUÇ YOK', 'Fiyat': 0, 'RUA': '-', 'FRM': '-', 'BUM': '-', 'TREF': '-'})
+        print("⚠️ Hiçbir hissede AL sinyali bulunamadı.")
+    
+    df_res = pd.DataFrame(results)
+    
+    # Sıralama (Puanlama)
+    if 'Hisse' in df_res.columns and df_res.iloc[0]['Hisse'] != 'SONUÇ YOK':
+        df_res['Puan'] = 0
+        df_res['Puan'] += df_res['RUA'].apply(lambda x: 1 if "AL" in str(x) else 0)
+        df_res['Puan'] += df_res['FRM'].apply(lambda x: 1 if x=="AL" else 0)
+        df_res['Puan'] += df_res['BUM'].apply(lambda x: 1 if x=="AL" else 0)
+        df_res['Puan'] += df_res['TREF'].apply(lambda x: 1 if x=="AL" else 0)
+        df_res = df_res.sort_values(by=['Puan'], ascending=False).drop(columns=['Puan'])
+
+    df_res.to_excel(OUTPUT_FILE, index=False)
+    print(f"✅ Rapor Oluşturuldu: {OUTPUT_FILE}")
+
+if __name__ == "__main__":
+    main()
