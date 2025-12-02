@@ -173,7 +173,7 @@ with tab1:
         if st.button("3+1 Süper", use_container_width=True): run_script("super_3_1.py", "3+1")
         if st.button("3'lü (Temel Analizli)", use_container_width=True): run_script("super_tarama_v2.py", "3'lü")
         if st.button("RUA Trend", use_container_width=True): run_script("rua_trend.py", "RUA")
-        if st.button("👑 4'lü Kombine", type="primary", use_container_width=True): run_script("kombine_tarama.py", "4'lü Kombine Tarama")
+        if st.button("4'lü Kombine", type="primary", use_container_width=True): run_script("kombine_tarama.py", "4'lü Kombine Tarama")
     with col3:
         st.info("📈 **Teknik**")
         if st.button("Hacimli EMA", use_container_width=True): run_script("hacimli_ema.py", "EMA")
@@ -251,5 +251,6 @@ with st.sidebar:
     with st.popover("⚠️ Verileri Sil"):
         if st.button("EVET, SİL", type="primary"):
             d = reset_system(); st.toast(f"{d} dosya silindi!"); time.sleep(1); st.rerun()
+
 
 
