@@ -26,6 +26,25 @@ def get_latest_report_file():
         return max(files, key=os.path.getmtime)
     except: return None
 
+def reset_system():
+    """Tüm verileri ve raporları temizler."""
+    deleted_count = 0
+    # 1. Hisse Verilerini Sil
+    data_files = glob.glob(os.path.join(DATA_DIR, "*.xlsx"))
+    for f in data_files:
+        try:
+            os.remove(f)
+            deleted_count += 1
+        except: pass
+    # 2. Raporları Sil
+    report_files = glob.glob(os.path.join(BASE_DIR, "*.xlsx"))
+    for f in report_files:
+        try:
+            os.remove(f)
+            deleted_count += 1
+        except: pass
+    return deleted_count
+
 def run_script(script_name, display_name):
     """Harici Python dosyasını çalıştırır."""
     script_path = os.path.join(BASE_DIR, script_name)
@@ -35,6 +54,7 @@ def run_script(script_name, display_name):
         return
 
     status_area = st.empty()
+    
     status_area.info(f"⏳ {display_name} çalıştırılıyor... Lütfen bekleyin.")
     
     try:
@@ -86,8 +106,8 @@ with c1:
 with c2:
     if file_count > 0:
         latest_data = max(excel_files_data, key=os.path.getmtime)
-        last_update_ts = datetime.fromtimestamp(os.path.getmtime(latest_data)) + timedelta(hours=3)
-        st.info(f"🕒 Veri Saati (TR): **{last_update_ts.strftime('%H:%M')}**")
+        last_update = datetime.fromtimestamp(os.path.getmtime(latest_data)) + timedelta(hours=3)
+        st.info(f"🕒 Veri Saati (TR): **{last_update.strftime('%H:%M')}**")
 
 st.markdown("---")
 
@@ -103,11 +123,30 @@ with st.sidebar:
         for f in latest_files:
             fname = os.path.basename(f)
             with open(f, "rb") as file:
-                st.download_button(label=f"📥 İndir: {fname}", data=file, file_name=fname, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                st.download_button(
+                    label=f"📥 İndir: {fname}",
+                    data=file,
+                    file_name=fname,
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
     else:
         st.caption("Henüz rapor yok.")
+    
+    st.markdown("---")
+    
+    # SIFIRLAMA ALANI
+    st.header("🗑️ Temizlik")
+    with st.expander("⚠️ Tehlikeli Bölge"):
+        st.caption("Tüm hisse verilerini ve raporları siler.")
+        confirm_reset = st.checkbox("Evet, her şeyi silmek istiyorum.")
+        
+        if st.button("💥 SİSTEMİ SIFIRLA", type="primary", disabled=not confirm_reset):
+            deleted = reset_system()
+            st.toast(f"Toplam {deleted} dosya silindi!", icon="🧹")
+            time.sleep(1)
+            st.rerun()
 
-# --- VERİ TABANI GÖZLEMCİSİ (YENİ EKLENEN KISIM) ---
+# --- VERİ TABANI GÖZLEMCİSİ (GERİ EKLENDİ) ---
 with st.expander("📂 **VERİ TABANINI İNCELE (Hisse Kontrol)**", expanded=False):
     if file_count > 0:
         # Dosya seçici
@@ -144,41 +183,58 @@ col1, col2, col3 = st.columns(3)
 
 with col1:
     st.info("📊 **Trend Analizleri**")
-    if st.button("🚀 Güçlü Trend & Kanal", use_container_width=True): run_script("guclu_trend.py", "Güçlü Trend Analizi")
-    if st.button("🏆 Expert MA Dashboard", use_container_width=True): run_script("expert_ma.py", "ExpertMA Puanlama")
-    if st.button("🛡️ Hull + ATR (AL / NAKIT)", use_container_width=True): run_script("hull_analiz.py", "Hull Trend Analizi")
-
+    if st.button("🚀 Güçlü Trend & Kanal", use_container_width=True):
+        run_script("guclu_trend.py", "Güçlü Trend Analizi")
+    if st.button("🏆 Expert MA Dashboard", use_container_width=True):
+        run_script("expert_ma.py", "ExpertMA Puanlama")
+    
 with col2:
     st.info("🎯 **Kombine Sistemler**")
-    if st.button("💎 3+1 Süper Tarama", use_container_width=True): run_script("super_3_1.py", "3+1 Süper Tarama")
-    if st.button("⚡ 3'lü Algo (Süre)", use_container_width=True): run_script("super_tarama_v2.py", "Hull+BUM+TREF")
-    if st.button("🧪 RUA v3 + Güçlü Trend", use_container_width=True): run_script("rua_trend.py", "RUA Trend Analizi")
-    if st.button("👑 4'lü Kombine (RUA+FRM+BUM+TREF)", type="primary", use_container_width=True): run_script("kombine_tarama.py", "4'lü Kombine Tarama")
+    if st.button("💎 3+1 Süper Tarama", use_container_width=True):
+        run_script("super_3_1.py", "3+1 Süper Tarama")
+    if st.button("⚡ 3'lü Algo (Süre)", use_container_width=True):
+        run_script("super_tarama_v2.py", "Hull+BUM+TREF")
+    if st.button("🧪 RUA v3 + Güçlü Trend", use_container_width=True):
+        run_script("rua_trend.py", "RUA Trend Analizi")
+    if st.button("👑 4'lü Kombine (RUA+FRM+BUM+TREF)", type="primary", use_container_width=True):
+        run_script("kombine_tarama.py", "4'lü Kombine Tarama")
 
 with col3:
     st.info("📈 **Teknik Göstergeler**")
-    if st.button("📢 Hacimli EMA Cross", use_container_width=True): run_script("hacimli_ema.py", "Hacimli EMA Cross")
-    if st.button("📏 LinReg & EMA", use_container_width=True): run_script("linreg_extended.py", "LinReg Extended")
-    if st.button("🧬 Hibrit Tarama V4", use_container_width=True): run_script("hibo_v4.py", "Hibo V4")
+    if st.button("📢 Hacimli EMA Cross", use_container_width=True):
+        run_script("hacimli_ema.py", "Hacimli EMA Cross")
+    if st.button("📏 LinReg & EMA", use_container_width=True):
+        run_script("linreg_extended.py", "LinReg Extended")
+    if st.button("🧬 Hibrit Tarama V4", use_container_width=True):
+        run_script("hibo_v4.py", "Hibo V4")
 
 st.markdown("---")
 
-# SONUÇ GÖRÜNTÜLEME
+# SONUÇ GÖRÜNTÜLEME ALANI
 latest_result_file = get_latest_report_file()
+
 if latest_result_file:
     st.header("📊 Son Analiz Sonuçları")
     st.caption(f"Dosya: {os.path.basename(latest_result_file)}")
     try:
         xl = pd.ExcelFile(latest_result_file)
         sheet_names = xl.sheet_names
-        selected_sheet = st.selectbox("Görüntülenecek Sayfa:", sheet_names)
+        
+        if len(sheet_names) > 1:
+            selected_sheet = st.selectbox("Görüntülenecek Sayfa:", sheet_names)
+        else:
+            selected_sheet = sheet_names[0]
+        
         df_sheet = pd.read_excel(latest_result_file, sheet_name=selected_sheet)
         st.dataframe(df_sheet, use_container_width=True)
-    except: st.warning("Dosya henüz hazır değil.")
+        
+    except Exception as e:
+        st.warning(f"Dosya okunamadı. Soldan indirip açmayı deneyin.")
 else:
     st.info("Analiz sonucu bekleniyor...")
 
 st.markdown("---")
 st.subheader("🔄 Veri Tabanı")
+
 if st.button("🌍 Verileri Güncelle (Yahoo Finance - 10 Yıllık)", type="primary", use_container_width=True):
     run_script("FinDow_Otomatik.py", "Veri İndirme Robotu")
