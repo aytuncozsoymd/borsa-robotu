@@ -3,7 +3,6 @@ pandas
 numpy
 openpyxl
 yfinance
-tvdatafeed
 scikit-learn
 scipy
 tqdm
@@ -12,5 +11,4 @@ xlsxwriter
 requests
 lxml
 websocket-client
-setuptools
-wheel
+https://github.com/rongardF/tvdatafeed/archive/refs/heads/main.zip
