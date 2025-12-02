@@ -1,18 +1,19 @@
 import yfinance as yf
 import pandas as pd
 import os
+import time
 from datetime import datetime, time as dt_time
 
-# --- AYARLAR ---
+# --- BULUT UYUMLU AYARLAR ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TARGET_FOLDER = os.path.join(BASE_DIR, 'DATAson')
 
 if not os.path.exists(TARGET_FOLDER):
     os.makedirs(TARGET_FOLDER)
 
-# HİSSE LİSTESİ
+# --- HİSSE LİSTESİ (Dosyanızdaki Liste - Düzeltilmiş) ---
 hisseler = 
-    ["A1CAP","A1YEN","AEFES","AGESA","AGHOL","AHGAZ","AHSGY","AKBNK","AKCNS","AKFGY","AKSA","AKSEN","AKSGY","ALARK","ALBRK",
+["A1CAP","A1YEN","AEFES","AGESA","AGHOL","AHGAZ","AHSGY","AKBNK","AKCNS","AKFGY","AKSA","AKSEN","AKSGY","ALARK","ALBRK",
     "ALCAR","ALGYO","ALKA","ALVES","ANHYT","ANSGR","ARASE","ARDYZ","ARMGD","ASELS","ASTOR","ASUZU","ATATP","AYGAZ","BASGZ","BESLR",
     "BEYAZ","BFREN","BIGCH","BIMAS","BLUME","BMSCH","BMSTL","BOSSA","BRISA","BRKSN","BRSAN","BVSAN","CCOLA","CEMTS","CIMSA",
     "CLEBI","CRDFA","CWENE","DAGI","DERIM","DESA","DESPC","DGATE","DOAS","DOFER","DOHOL","EBEBK","ECILC","EDATA","EGEPO",
@@ -29,30 +30,39 @@ hisseler =
     "XGMYO","XUHIZ","XTUMY","XU500","XKAGT","XHOLD","XFINK","XUMAL","XELKT","XMANA","XULAS","XAKUR","XUSIN","XILTM","XMADN","XTAST",
     "XBLSM","XTCRT","XSGRT","XGIDA","XKMYA","XTEKS","XK100","ALTIN","GLDTR","GMSTR"]
 
-
 def main():
-    print("--- YFINANCE İLE VERİ İNDİRME (10 YILLIK - FULL) ---")
+    print("--- YFINANCE İLE VERİ İNDİRME (Orijinal Liste - 10 Yıllık) ---")
     
     basarili = 0
     hatali = 0
     total = len(hisseler)
     
-    # Zaman Kontrolü
+    # Zaman Kontrolü (18:15 Kuralı)
     bugun = datetime.now().date()
     su_an = datetime.now().time()
     piyasa_kapanis_saati = dt_time(18, 15)
+    
     piyasa_kapali_mi = su_an > piyasa_kapanis_saati
     
-    print(f"📅 Tarih: {bugun} | Piyasa Durumu: {'KAPALI' if piyasa_kapali_mi else 'AÇIK'}")
+    print(f"📅 Tarih: {bugun}")
+    print(f"⏰ Saat: {su_an.strftime('%H:%M')} | Piyasa: {'KAPALI' if piyasa_kapali_mi else 'AÇIK'}")
+    
+    if not piyasa_kapali_mi:
+        print("⚠️ Uyarı: Piyasa açık olduğu için bugünün (tamamlanmamış) verileri silinecek.")
 
     for i, sembol in enumerate(hisseler):
         try:
-            if sembol == "XU100": yf_sembol = "XU100.IS"
-            elif sembol == "ALTIN.IN": yf_sembol = "GC=F"
-            elif sembol in ["GLDTR", "GMSTR"]: yf_sembol = f"{sembol}.IS"
-            else: yf_sembol = f"{sembol}.IS"
+            # Özel Sembol Ayarları
+            if sembol == "ALTIN.IN" or sembol == "ALTIN":
+                yf_sembol = "GC=F" # Ons Altın Vadeli
+            elif sembol.startswith("X"): # Endeksler (XU100, XBLSM vb.)
+                yf_sembol = f"{sembol}.IS"
+            elif sembol in ["GLDTR", "GMSTR"]: # Fonlar
+                yf_sembol = f"{sembol}.IS"
+            else:
+                yf_sembol = f"{sembol}.IS" # Normal Hisseler
             
-            # DEĞİŞİKLİK BURADA: period="10y" yaptık (Uzun vade analizler için)
+            # Veriyi çek (10 Yıllık)
             df = yf.download(yf_sembol, period="10y", interval="1d", progress=False, auto_adjust=True)
             
             if df.empty:
@@ -60,11 +70,12 @@ def main():
                 hatali += 1
                 continue
             
-            # Formatlama
+            # Formatlama (MultiIndex Düzeltme)
             df.reset_index(inplace=True)
             if isinstance(df.columns, pd.MultiIndex):
                 df.columns = df.columns.get_level_values(0)
             
+            # Sütun İsimlerini Sisteme Uyarlama
             df.rename(columns={
                 'Date': 'DATE', 'Open': 'OPEN_TL', 'High': 'HIGH_TL', 
                 'Low': 'LOW_TL', 'Close': 'CLOSING_TL', 'Volume': 'VOLUME_TL'
@@ -72,23 +83,33 @@ def main():
             
             df['DATE'] = pd.to_datetime(df['DATE'])
             
-            # Son Mum Kontrolü
+            # --- KRİTİK: SON MUM KONTROLÜ ---
             if not df.empty:
                 son_tarih = df['DATE'].iloc[-1].date()
+                # Eğer son veri bugüne aitse VE piyasa henüz kapanmadıysa -> SİL
                 if son_tarih == bugun and not piyasa_kapali_mi:
                     df = df[:-1] 
             
-            filename = os.path.join(TARGET_FOLDER, f"{sembol}.xlsx")
+            # Kaydet
+            # Dosya ismini orjinal listedeki isimle kaydet (ALTIN.IN -> ALTIN.xlsx gibi kalsın istiyorsan)
+            # Ancak kodun geri kalanı .IN uzantısını sevmez, temizleyelim:
+            temiz_isim = sembol.replace(".IN", "")
+            filename = os.path.join(TARGET_FOLDER, f"{temiz_isim}.xlsx")
+            
             df.to_excel(filename, index=False)
             basarili += 1
             
-            if i % 10 == 0: print(f"⬇️ {sembol} indirildi... ({i}/{total})")
+            if i % 10 == 0:
+                print(f"⬇️ {sembol} indirildi... ({i}/{total})")
                 
-        except:
+        except Exception as e:
             hatali += 1
+            # print(f"Hata: {e}") # Debug için açılabilir
             continue
 
-    print(f"TAMAMLANDI. İndirilen: {basarili}")
+    print("-" * 30)
+    print(f"✅ İŞLEM TAMAMLANDI.")
+    print(f"Başarılı: {basarili}, Hatalı: {hatali}")
 
 if __name__ == "__main__":
-    main()
+    main()      
