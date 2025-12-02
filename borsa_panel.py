@@ -110,7 +110,7 @@ with c2:
 
 st.markdown("---")
 
-# YAN MENÜ (Sadece Raporlar)
+# YAN MENÜ
 with st.sidebar:
     st.header("📂 Rapor Geçmişi")
     if st.button("🔄 Listeyi Yenile"):
@@ -130,10 +130,25 @@ with st.sidebar:
                 )
     else:
         st.caption("Henüz rapor yok.")
+    
+    st.markdown("---")
+    
+    # SIFIRLAMA ALANI (YAN MENÜ)
+    st.header("🗑️ Temizlik")
+    with st.expander("⚠️ Tehlikeli Bölge"):
+        st.caption("Tüm hisse verilerini ve raporları siler.")
+        confirm_reset = st.checkbox("Evet, her şeyi silmek istiyorum.")
+        
+        if st.button("💥 SİSTEMİ SIFIRLA", type="primary", disabled=not confirm_reset):
+            deleted = reset_system()
+            st.toast(f"Toplam {deleted} dosya silindi!", icon="🧹")
+            time.sleep(1)
+            st.rerun()
 
 # --- VERİ TABANI GÖZLEMCİSİ ---
 with st.expander("📂 **VERİ TABANINI İNCELE (Hisse Kontrol)**", expanded=False):
     if file_count > 0:
+        # Dosya seçici
         file_options = sorted([os.path.basename(f) for f in excel_files_data])
         selected_file = st.selectbox("İncelemek istediğiniz hisseyi seçin:", file_options)
         
@@ -141,16 +156,21 @@ with st.expander("📂 **VERİ TABANINI İNCELE (Hisse Kontrol)**", expanded=Fal
             file_path = os.path.join(DATA_DIR, selected_file)
             try:
                 df_view = pd.read_excel(file_path)
+                
                 k1, k2, k3 = st.columns(3)
                 k1.metric("Toplam Satır", len(df_view))
+                
                 if 'DATE' in df_view.columns:
                     last_date = pd.to_datetime(df_view['DATE'].iloc[-1]).strftime('%Y-%m-%d')
                     k2.metric("Son Veri Tarihi", last_date)
+                
                 if 'CLOSING_TL' in df_view.columns:
                     last_price = df_view['CLOSING_TL'].iloc[-1]
                     k3.metric("Son Fiyat", f"{last_price:.2f}")
+
                 st.caption("Son 10 Günlük Veri:")
                 st.dataframe(df_view.tail(10), use_container_width=True)
+                
             except Exception as e:
                 st.error(f"Dosya okunamadı: {e}")
     else:
@@ -183,4 +203,46 @@ with col2:
 with col3:
     st.info("📈 **Teknik Göstergeler**")
     if st.button("📢 Hacimli EMA Cross", use_container_width=True):
-        run_script("hacimli_ema.py", "Hac
+        run_script("hacimli_ema.py", "Hacimli EMA Cross")
+    if st.button("📏 LinReg & EMA", use_container_width=True):
+        run_script("linreg_extended.py", "LinReg Extended")
+    if st.button("🧬 Hibrit Tarama V4", use_container_width=True):
+        run_script("hibo_v4.py", "Hibo V4")
+
+st.markdown("---")
+
+# SONUÇ GÖRÜNTÜLEME
+latest_result_file = get_latest_report_file()
+
+if latest_result_file:
+    st.header("📊 Son Analiz Sonuçları")
+    st.caption(f"Dosya: {os.path.basename(latest_result_file)}")
+    try:
+        xl = pd.ExcelFile(latest_result_file)
+        sheet_names = xl.sheet_names
+        
+        selected_sheet = st.selectbox("Görüntülenecek Sayfa:", sheet_names)
+        df_sheet = pd.read_excel(latest_result_file, sheet_name=selected_sheet)
+        st.dataframe(df_sheet, use_container_width=True)
+    except: st.warning("Dosya henüz hazır değil veya okunamadı.")
+else:
+    st.info("Analiz sonucu bekleniyor...")
+
+st.markdown("---")
+st.subheader("🔄 Veri Tabanı")
+
+c_upd, c_reset = st.columns([2, 1])
+
+with c_upd:
+    if st.button("🌍 Verileri Güncelle (Yahoo - 10 Yıl)", type="primary", use_container_width=True):
+        run_script("FinDow_Otomatik.py", "Veri İndirme Robotu")
+
+# Ana Sayfa Altındaki SIFIRLAMA (Alternatif Erişim)
+with c_reset:
+    with st.popover("🗑️ Hızlı Sıfırla"):
+        st.warning("Veriler silinsin mi?")
+        if st.button("EVET", type="secondary", use_container_width=True):
+            deleted = reset_system()
+            st.toast(f"Temizlendi!", icon="🧹")
+            time.sleep(1)
+            st.rerun()
