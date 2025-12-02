@@ -9,3 +9,8 @@ scipy
 tqdm
 colorama
 xlsxwriter
+requests
+lxml
+websocket-client
+setuptools
+wheel
