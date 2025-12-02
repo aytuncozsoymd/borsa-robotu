@@ -213,4 +213,51 @@ def process_channels(data_folder, main_excel_path):
             lower = pred[-1] - 2*std
             
             diff_up = (upper - last)/last*100
-            diff_down = (last - lower)/last*
+            diff_down = (last - lower)/last*100
+            
+            pearson = np.corrcoef(sub['CLOSING_TL'], pred)[0, 1]
+            if model.coef_[0] < 0: pearson = -pearson
+            
+            res.append({
+                'Hisse': f.replace('.xlsx',''), 'Vade': v,
+                'Fiyat': last, 'Pearson': pearson,
+                'Üst Fark %': diff_up, 'Alt Fark %': diff_down
+            })
+            
+    df_ch = pd.DataFrame(res)
+    
+    # Excel'e Ekleme
+    with pd.ExcelWriter(main_excel_path, engine='openpyxl', mode='a') as writer:
+        df_ch.to_excel(writer, sheet_name='Kanal_Ekstra', index=False)
+        
+        # ListeBaşı Sayfası (Filtreli)
+        lb = df_ch[
+            (df_ch['Pearson'] > 0.9) & 
+            ((df_ch['Üst Fark %'] <= 2) | (df_ch['Alt Fark %'] <= 2))
+        ]
+        
+        if not lb.empty:
+            lb.to_excel(writer, sheet_name='ListeBaşı', index=False)
+            ws = writer.sheets['ListeBaşı']
+            
+            red_fill = PatternFill(start_color='FF0000', fill_type='solid')
+            navy_fill = PatternFill(start_color='000080', fill_type='solid')
+            white_font = Font(color='FFFFFF', bold=True)
+            
+            for row in ws.iter_rows(min_row=2):
+                # Varsayılan Lacivert
+                for cell in row: 
+                    cell.fill = navy_fill; cell.font = white_font
+                
+                # Alt banda yakınsa (Alım Fırsatı) Kırmızı yap
+                # 'Alt Fark %' kolonu indeks 6 (G sütunu)
+                try:
+                    if row[6].value is not None and float(row[6].value) <= 2:
+                        for cell in row: cell.fill = red_fill
+                except: pass
+
+if __name__ == "__main__":
+    print("LinReg Extended Analizi Başlıyor...")
+    path = process_stocks(DATA_DIR, OUTPUT_DIR)
+    process_channels(DATA_DIR, path)
+    print(f"✅ İŞLEM TAMAMLANDI: {path}")
