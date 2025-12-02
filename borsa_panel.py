@@ -54,7 +54,6 @@ def run_script(script_name, display_name):
         return
 
     status_area = st.empty()
-    
     status_area.info(f"⏳ {display_name} çalıştırılıyor... Lütfen bekleyin.")
     
     try:
@@ -118,6 +117,7 @@ with st.sidebar:
         time.sleep(0.5)
         st.rerun()
     st.write("---")
+    
     latest_files = get_latest_files_list()
     if latest_files:
         for f in latest_files:
@@ -134,7 +134,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # SIFIRLAMA ALANI
+    # --- TEMİZLİK MENÜSÜ (EKLENDİ) ---
     st.header("🗑️ Temizlik")
     with st.expander("⚠️ Tehlikeli Bölge"):
         st.caption("Tüm hisse verilerini ve raporları siler.")
@@ -146,23 +146,24 @@ with st.sidebar:
             time.sleep(1)
             st.rerun()
 
-# --- VERİ TABANI GÖZLEMCİSİ (GERİ EKLENDİ) ---
+# --- VERİ TABANI GÖZLEMCİSİ ---
 with st.expander("📂 **VERİ TABANINI İNCELE (Hisse Kontrol)**", expanded=False):
     if file_count > 0:
-        # Dosya seçici
-        selected_file = st.selectbox("İncelemek istediğiniz hisseyi seçin:", sorted([os.path.basename(f) for f in excel_files_data]))
+        file_options = sorted([os.path.basename(f) for f in excel_files_data])
+        selected_file = st.selectbox("İncelemek istediğiniz hisseyi seçin:", file_options)
         
         if selected_file:
             file_path = os.path.join(DATA_DIR, selected_file)
             try:
                 df_view = pd.read_excel(file_path)
                 
-                # Bilgi Kartları
                 k1, k2, k3 = st.columns(3)
                 k1.metric("Toplam Satır", len(df_view))
+                
                 if 'DATE' in df_view.columns:
                     last_date = pd.to_datetime(df_view['DATE'].iloc[-1]).strftime('%Y-%m-%d')
                     k2.metric("Son Veri Tarihi", last_date)
+                
                 if 'CLOSING_TL' in df_view.columns:
                     last_price = df_view['CLOSING_TL'].iloc[-1]
                     k3.metric("Son Fiyat", f"{last_price:.2f}")
@@ -187,7 +188,7 @@ with col1:
         run_script("guclu_trend.py", "Güçlü Trend Analizi")
     if st.button("🏆 Expert MA Dashboard", use_container_width=True):
         run_script("expert_ma.py", "ExpertMA Puanlama")
-    
+
 with col2:
     st.info("🎯 **Kombine Sistemler**")
     if st.button("💎 3+1 Süper Tarama", use_container_width=True):
@@ -196,45 +197,4 @@ with col2:
         run_script("super_tarama_v2.py", "Hull+BUM+TREF")
     if st.button("🧪 RUA v3 + Güçlü Trend", use_container_width=True):
         run_script("rua_trend.py", "RUA Trend Analizi")
-    if st.button("👑 4'lü Kombine (RUA+FRM+BUM+TREF)", type="primary", use_container_width=True):
-        run_script("kombine_tarama.py", "4'lü Kombine Tarama")
-
-with col3:
-    st.info("📈 **Teknik Göstergeler**")
-    if st.button("📢 Hacimli EMA Cross", use_container_width=True):
-        run_script("hacimli_ema.py", "Hacimli EMA Cross")
-    if st.button("📏 LinReg & EMA", use_container_width=True):
-        run_script("linreg_extended.py", "LinReg Extended")
-    if st.button("🧬 Hibrit Tarama V4", use_container_width=True):
-        run_script("hibo_v4.py", "Hibo V4")
-
-st.markdown("---")
-
-# SONUÇ GÖRÜNTÜLEME ALANI
-latest_result_file = get_latest_report_file()
-
-if latest_result_file:
-    st.header("📊 Son Analiz Sonuçları")
-    st.caption(f"Dosya: {os.path.basename(latest_result_file)}")
-    try:
-        xl = pd.ExcelFile(latest_result_file)
-        sheet_names = xl.sheet_names
-        
-        if len(sheet_names) > 1:
-            selected_sheet = st.selectbox("Görüntülenecek Sayfa:", sheet_names)
-        else:
-            selected_sheet = sheet_names[0]
-        
-        df_sheet = pd.read_excel(latest_result_file, sheet_name=selected_sheet)
-        st.dataframe(df_sheet, use_container_width=True)
-        
-    except Exception as e:
-        st.warning(f"Dosya okunamadı. Soldan indirip açmayı deneyin.")
-else:
-    st.info("Analiz sonucu bekleniyor...")
-
-st.markdown("---")
-st.subheader("🔄 Veri Tabanı")
-
-if st.button("🌍 Verileri Güncelle (Yahoo Finance - 10 Yıllık)", type="primary", use_container_width=True):
-    run_script("FinDow_Otomatik.py", "Veri İndirme Robotu")
+    if
