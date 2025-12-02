@@ -2,7 +2,7 @@ import yfinance as yf
 import pandas as pd
 import os
 import time
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, time as dt_time
 
 # --- BULUT UYUMLU AYARLAR ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -11,7 +11,7 @@ TARGET_FOLDER = os.path.join(BASE_DIR, 'DATAson')
 if not os.path.exists(TARGET_FOLDER):
     os.makedirs(TARGET_FOLDER)
 
-# HİSSE LİSTESİ
+# HİSSE LİSTESİ (Özet)
 hisseler = [
     "A1CAP","A1YEN","AEFES","AGESA","AGHOL","AGYO","AHGAZ","AKBNK","AKFGY","AKGRT","AKMGY",
     "AKSEN","AKSUE","ALBRK","ALCAR","ALKA","ALTIN.IN","ANHYT","ANSGR","ARASE","ARDYZ","ASELS","ASTOR","ATAGY","ATATP","AVGYO",
@@ -31,66 +31,94 @@ hisseler = [
 ]
 
 def main():
-    print("--- YFINANCE İLE VERİ İNDİRME (GMT+3 Türkiye Saati) ---")
+    print("--- VERİ İNDİRME + TEMEL ANALİZ (10 Yıllık) ---")
     
     basarili = 0
-    hatali = 0
     total = len(hisseler)
+    temel_veriler = [] # F/K, PD/DD verilerini tutacak liste
     
-    # Zaman Kontrolü (Türkiye Saatine Göre)
-    # Sunucu UTC'dir, bu yüzden +3 saat ekliyoruz.
-    su_an_tr = datetime.now() + timedelta(hours=3)
-    bugun = su_an_tr.date()
-    su_an_saat = su_an_tr.time()
-    
+    bugun = datetime.now().date()
+    su_an = datetime.now().time()
     piyasa_kapanis_saati = dt_time(18, 15)
+    piyasa_kapali_mi = su_an > piyasa_kapanis_saati
     
-    piyasa_kapali_mi = su_an_saat > piyasa_kapanis_saati
-    
-    print(f"📅 TR Tarih: {bugun}")
-    print(f"⏰ TR Saat: {su_an_saat.strftime('%H:%M')} | Piyasa: {'KAPALI' if piyasa_kapali_mi else 'AÇIK'}")
-    
-    if not piyasa_kapali_mi:
-        print("⚠️ Piyasa henüz kapanmadı. Bugünün (tamamlanmamış) mumları silinecek.")
+    print(f"Piyasa Durumu: {'KAPALI (Son Veri Dahil)' if piyasa_kapali_mi else 'AÇIK (Son Veri Silinecek)'}")
 
     for i, sembol in enumerate(hisseler):
         try:
-            if sembol == "ALTIN.IN" or sembol == "ALTIN": yf_sembol = "GC=F"
+            # Sembol Ayarı
+            if sembol == "ALTIN.IN": yf_sembol = "GC=F"
             elif sembol.startswith("X"): yf_sembol = f"{sembol}.IS"
             elif sembol in ["GLDTR", "GMSTR"]: yf_sembol = f"{sembol}.IS"
             else: yf_sembol = f"{sembol}.IS"
             
-            df = yf.download(yf_sembol, period="10y", interval="1d", progress=False, auto_adjust=True)
+            # 1. GEÇMİŞ VERİ (MUM) ÇEKME
+            ticker = yf.Ticker(yf_sembol)
+            df = ticker.history(period="10y", interval="1d", auto_adjust=True)
             
             if df.empty:
                 print(f"❌ {sembol}: Veri boş.")
-                hatali += 1
                 continue
             
+            # 2. TEMEL ANALİZ VERİSİ ÇEKME (Info)
+            try:
+                info = ticker.info
+                # Verileri güvenli çek (yoksa 0 veya Tire koy)
+                fk = info.get('trailingPE', 0)
+                pddd = info.get('priceToBook', 0)
+                sector = info.get('sector', 'Diğer')
+                market_cap = info.get('marketCap', 0)
+                daily_change = 0
+                
+                # Son gün kapanış ve değişim
+                if len(df) >= 2:
+                    close_now = df['Close'].iloc[-1]
+                    close_prev = df['Close'].iloc[-2]
+                    daily_change = ((close_now - close_prev) / close_prev) * 100
+                
+                temel_veriler.append({
+                    'Hisse': sembol,
+                    'Fiyat': round(df['Close'].iloc[-1], 2),
+                    'FK': round(fk, 2) if fk else 0,
+                    'PD_DD': round(pddd, 2) if pddd else 0,
+                    'Sektor': sector,
+                    'Piyasa_Degeri': market_cap,
+                    'Degisim_Yuzde': round(daily_change, 2)
+                })
+            except:
+                pass # Temel veri yoksa da devam et
+
+            # 3. KAYDETME İŞLEMLERİ
             df.reset_index(inplace=True)
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+            df['Date'] = pd.to_datetime(df['Date']).dt.tz_localize(None) # Saat dilimini temizle
             
-            df.rename(columns={'Date':'DATE', 'Open':'OPEN_TL', 'High':'HIGH_TL', 'Low':'LOW_TL', 'Close':'CLOSING_TL', 'Volume':'VOLUME_TL'}, inplace=True)
-            df['DATE'] = pd.to_datetime(df['DATE'])
+            df.rename(columns={'Date': 'DATE', 'Open': 'OPEN_TL', 'High': 'HIGH_TL', 
+                               'Low': 'LOW_TL', 'Close': 'CLOSING_TL', 'Volume': 'VOLUME_TL'}, inplace=True)
             
-            # --- SON MUM KONTROLÜ (TR Saatine Göre) ---
+            # Son mum kontrolü
             if not df.empty:
                 son_tarih = df['DATE'].iloc[-1].date()
                 if son_tarih == bugun and not piyasa_kapali_mi:
-                    df = df[:-1] 
+                    df = df[:-1]
             
             filename = os.path.join(TARGET_FOLDER, f"{sembol.replace('.IN','')}.xlsx")
             df.to_excel(filename, index=False)
             basarili += 1
             
-            if i % 10 == 0: print(f"⬇️ {sembol} indirildi... ({i}/{total})")
+            if i % 10 == 0: print(f"⬇️ {sembol} işlendi... ({i}/{total})")
                 
-        except:
-            hatali += 1
+        except Exception as e:
             continue
 
+    # --- TEMEL VERİLERİ ÖZET OLARAK KAYDET ---
+    if temel_veriler:
+        df_temel = pd.DataFrame(temel_veriler)
+        summary_path = os.path.join(TARGET_FOLDER, "TEMEL_VERILER.xlsx")
+        df_temel.to_excel(summary_path, index=False)
+        print(f"📊 Temel Analiz Dosyası Oluşturuldu: {summary_path}")
+
     print("-" * 30)
-    print(f"✅ İŞLEM TAMAMLANDI. (Başarılı: {basarili})")
+    print(f"✅ İŞLEM TAMAMLANDI. Başarılı: {basarili}")
 
 if __name__ == "__main__":
     main()
