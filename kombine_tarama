@@ -148,15 +148,14 @@ def main():
                 })
         except: continue
         
-    # --- KRİTİK DÜZELTME: DOSYA OLUŞTURMA GARANTİSİ ---
+    # --- GARANTİ: DOSYA OLUŞTURMA ---
     if not results:
-        # Sonuç yoksa boş ama uyarı içeren bir dosya oluştur
         results.append({'Hisse': 'SONUÇ YOK', 'Fiyat': 0, 'RUA': '-', 'FRM': '-', 'BUM': '-', 'TREF': '-'})
         print("⚠️ Hiçbir hissede AL sinyali bulunamadı.")
     
     df_res = pd.DataFrame(results)
     
-    # Sıralama (Puanlama)
+    # Sıralama
     if 'Hisse' in df_res.columns and df_res.iloc[0]['Hisse'] != 'SONUÇ YOK':
         df_res['Puan'] = 0
         df_res['Puan'] += df_res['RUA'].apply(lambda x: 1 if "AL" in str(x) else 0)
