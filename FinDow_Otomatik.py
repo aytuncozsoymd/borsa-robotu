@@ -1,18 +1,18 @@
 import yfinance as yf
 import pandas as pd
 import os
-import time
 from datetime import datetime, time as dt_time
 
-# --- BULUT UYUMLU AYARLAR ---
+# --- AYARLAR ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 TARGET_FOLDER = os.path.join(BASE_DIR, 'DATAson')
 
 if not os.path.exists(TARGET_FOLDER):
     os.makedirs(TARGET_FOLDER)
 
-# HİSSE LİSTESİ (Genişletilebilir)
-hisseler = ["A1CAP","A1YEN","AEFES","AGESA","AGHOL","AHGAZ","AHSGY","AKBNK","AKCNS","AKFGY","AKSA","AKSEN","AKSGY","ALARK","ALBRK",
+# HİSSE LİSTESİ
+hisseler = 
+    ["A1CAP","A1YEN","AEFES","AGESA","AGHOL","AHGAZ","AHSGY","AKBNK","AKCNS","AKFGY","AKSA","AKSEN","AKSGY","ALARK","ALBRK",
     "ALCAR","ALGYO","ALKA","ALVES","ANHYT","ANSGR","ARASE","ARDYZ","ARMGD","ASELS","ASTOR","ASUZU","ATATP","AYGAZ","BASGZ","BESLR",
     "BEYAZ","BFREN","BIGCH","BIMAS","BLUME","BMSCH","BMSTL","BOSSA","BRISA","BRKSN","BRSAN","BVSAN","CCOLA","CEMTS","CIMSA",
     "CLEBI","CRDFA","CWENE","DAGI","DERIM","DESA","DESPC","DGATE","DOAS","DOFER","DOHOL","EBEBK","ECILC","EDATA","EGEPO",
@@ -29,8 +29,9 @@ hisseler = ["A1CAP","A1YEN","AEFES","AGESA","AGHOL","AHGAZ","AHSGY","AKBNK","AKC
     "XGMYO","XUHIZ","XTUMY","XU500","XKAGT","XHOLD","XFINK","XUMAL","XELKT","XMANA","XULAS","XAKUR","XUSIN","XILTM","XMADN","XTAST",
     "XBLSM","XTCRT","XSGRT","XGIDA","XKMYA","XTEKS","XK100","ALTIN","GLDTR","GMSTR"]
 
+
 def main():
-    print("--- YFINANCE İLE VERİ İNDİRME (Kapanış Odaklı) ---")
+    print("--- YFINANCE İLE VERİ İNDİRME (10 YILLIK - FULL) ---")
     
     basarili = 0
     hatali = 0
@@ -39,25 +40,20 @@ def main():
     # Zaman Kontrolü
     bugun = datetime.now().date()
     su_an = datetime.now().time()
-    piyasa_kapanis_saati = dt_time(18, 15) # BIST Kapanış + 5 dk marj
-    
+    piyasa_kapanis_saati = dt_time(18, 15)
     piyasa_kapali_mi = su_an > piyasa_kapanis_saati
     
-    print(f"📅 Tarih: {bugun}")
-    print(f"⏰ Saat: {su_an.strftime('%H:%M')}")
-    if piyasa_kapali_mi:
-        print("✅ Piyasa KAPALI. Bugünün kapanış verileri dahil edilecek.")
-    else:
-        print("⚠️ Piyasa AÇIK. Bugünün (tamamlanmamış) verileri SİLİNECEK, dünkü kapanış baz alınacak.")
-    
-    print("-" * 50)
+    print(f"📅 Tarih: {bugun} | Piyasa Durumu: {'KAPALI' if piyasa_kapali_mi else 'AÇIK'}")
 
     for i, sembol in enumerate(hisseler):
         try:
-            yf_sembol = f"{sembol}.IS"
+            if sembol == "XU100": yf_sembol = "XU100.IS"
+            elif sembol == "ALTIN.IN": yf_sembol = "GC=F"
+            elif sembol in ["GLDTR", "GMSTR"]: yf_sembol = f"{sembol}.IS"
+            else: yf_sembol = f"{sembol}.IS"
             
-            # Veriyi çek
-            df = yf.download(yf_sembol, period="2y", interval="1d", progress=False, auto_adjust=True)
+            # DEĞİŞİKLİK BURADA: period="10y" yaptık (Uzun vade analizler için)
+            df = yf.download(yf_sembol, period="10y", interval="1d", progress=False, auto_adjust=True)
             
             if df.empty:
                 print(f"❌ {sembol}: Veri boş.")
@@ -76,29 +72,23 @@ def main():
             
             df['DATE'] = pd.to_datetime(df['DATE'])
             
-            # --- KRİTİK NOKTA: SON MUM KONTROLÜ ---
+            # Son Mum Kontrolü
             if not df.empty:
                 son_tarih = df['DATE'].iloc[-1].date()
-                
-                # Eğer son veri bugüne aitse VE piyasa henüz kapanmadıysa -> SİL
                 if son_tarih == bugun and not piyasa_kapali_mi:
-                    df = df[:-1] # Son satırı at
+                    df = df[:-1] 
             
-            # Kaydet
             filename = os.path.join(TARGET_FOLDER, f"{sembol}.xlsx")
             df.to_excel(filename, index=False)
             basarili += 1
             
-            if i % 10 == 0:
-                print(f"⬇️ {sembol} indirildi... ({i}/{total})")
+            if i % 10 == 0: print(f"⬇️ {sembol} indirildi... ({i}/{total})")
                 
-        except Exception as e:
+        except:
             hatali += 1
             continue
 
-    print("-" * 30)
-    print(f"TAMAMLANDI. İndirilen: {basarili}, Hatalı: {hatali}")
+    print(f"TAMAMLANDI. İndirilen: {basarili}")
 
 if __name__ == "__main__":
     main()
-
