@@ -9,6 +9,10 @@ from openpyxl.utils import get_column_letter
 from sklearn.linear_model import LinearRegression
 from scipy.stats import pearsonr
 from tqdm import tqdm
+import colorama
+from colorama import Fore, Style
+
+colorama.init(autoreset=True)
 
 # ==================== BULUT UYUMLU AYARLAR ====================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -19,34 +23,25 @@ if not os.path.exists(DATA_DIR):
     os.makedirs(DATA_DIR)
 # ==============================================================
 
-def _normalize_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = [str(c).strip().upper() for c in df.columns]
-    if df.index.name and str(df.index.name).strip().upper() in {"DATE", "TARIH", "TARİH", "TIME"}:
-        df = df.reset_index()
-    col_aliases = {
-        "DATE": ["DATE", "TARIH", "TARİH"],
-        "CLOSING_TL": ["CLOSING_TL", "CLOSE", "KAPANIS"],
-        "VOLUME_TL": ["VOLUME_TL", "VOLUME", "HACIM"]
-    }
-    for target, aliases in col_aliases.items():
-        if target not in df.columns:
-            for c in aliases:
-                if c in df.columns: df.rename(columns={c: target}, inplace=True); break
-    if "DATE" in df.columns:
-        df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce", dayfirst=True)
-        df = df.dropna(subset=["DATE"]).sort_values("DATE")
-    return df
-
-def load_stock_df(file_path: str) -> pd.DataFrame | None:
+def load_stock_df(file_path):
     try:
-        df = pd.read_excel(file_path) if file_path.endswith(".xlsx") else pd.read_csv(file_path)
+        df = pd.read_excel(file_path)
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        col_map = {"DATE": ["DATE","TARIH"], "CLOSING_TL": ["CLOSING_TL","CLOSE","KAPANIS"], "VOLUME_TL": ["VOLUME_TL","VOL","HACIM"]}
+        for t, aliases in col_map.items():
+            if t not in df.columns:
+                for a in aliases:
+                    if a in df.columns: df.rename(columns={a: t}, inplace=True); break
+        if "DATE" in df.columns:
+            df["DATE"] = pd.to_datetime(df["DATE"], errors='coerce')
+            df.dropna(subset=["DATE", "CLOSING_TL"], inplace=True)
+            df.sort_values("DATE", inplace=True)
+        if "CLOSING_TL" not in df.columns or len(df) < 233: return None
+        return df
     except: return None
-    df = _normalize_columns(df)
-    if "DATE" not in df.columns or "CLOSING_TL" not in df.columns or len(df) < 233: return None
-    return df
 
 def calculate_ema(data, period): return data.ewm(span=period, adjust=False).mean()
+
 def calculate_rsi(series, period=14):
     delta = series.diff()
     gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
@@ -54,63 +49,114 @@ def calculate_rsi(series, period=14):
     rs = gain / loss
     return (100 - (100 / (1 + rs))).fillna(50)
 
-def process_stocks(data_folder, output_folder):
-    start_time = time.time()
-    current_timestamp_str = datetime.now().strftime('%d-%m-%Y-%H-%M')
-    excel_path = os.path.join(output_folder, f'Guclu_Trend_{current_timestamp_str}.xlsx')
+def autofit(ws):
+    for column in ws.columns:
+        length = max(len(str(cell.value)) for cell in column if cell.value)
+        ws.column_dimensions[column[0].column_letter].width = min(length + 2, 50)
+
+def main():
+    print(f"\n🚀 Güçlü Trend (Full Detay) Analizi Başlıyor...")
+    files = [f for f in os.listdir(DATA_DIR) if f.endswith('.xlsx')]
     
-    files = [f for f in os.listdir(data_folder) if f.lower().endswith(('.xlsx', '.csv'))]
-    results = []
+    results_ema = []
+    results_strat = []
     
-    for filename in tqdm(files, desc="Analiz", leave=False):
-        df = load_stock_df(os.path.join(data_folder, filename))
+    ema_periods = [8, 13, 21, 34, 55, 89, 144, 233]
+    pearson_periods = [55, 89, 144, 233, 377, 610, 987]
+    all_pearson = {}
+
+    for file in tqdm(files, desc="Hisseler Taranıyor"):
+        df = load_stock_df(os.path.join(DATA_DIR, file))
         if df is None: continue
-
-        ema_periods = [8, 13, 21, 34, 55, 89, 144, 233]
-        for p in ema_periods: df[f'EMA{p}'] = calculate_ema(df['CLOSING_TL'], p)
-
-        last_row = df.iloc[-1]
-        closing = last_row['CLOSING_TL']
         
-        # IDEAL UP KONTROL
-        vals = [last_row[f'EMA{p}'] for p in ema_periods]
-        is_ideal_up = (closing > vals[0]) and all(vals[i] > vals[i+1] for i in range(len(vals)-1))
+        hisse = file.replace('.xlsx', '')
+        close = df['CLOSING_TL']
+        curr = close.iloc[-1]
         
-        if is_ideal_up:
-            # PEARSON HESABI
-            y = df['CLOSING_TL'].tail(233)
-            X = np.arange(len(y)).reshape(-1, 1)
-            pearson = np.corrcoef(X.flatten(), y)[0, 1] if len(y)>1 else 0
+        # --- BÖLÜM 1: EMA ANALİZİ ---
+        ema_vals = {p: calculate_ema(close, p).iloc[-1] for p in ema_periods}
+        
+        # IDEAL UP Kontrolü (Sıralı Dizilim)
+        vals = list(ema_vals.values())
+        is_ideal = all(vals[i] > vals[i+1] for i in range(len(vals)-1)) and (curr > vals[0])
+        is_up = all(curr > v for v in vals)
+        
+        # Pearson Hesaplama
+        p_data = {}
+        for p in pearson_periods:
+            if len(df) >= p:
+                y = close.tail(p).values
+                X = np.arange(len(y)).reshape(-1, 1)
+                p_data[p] = np.corrcoef(X.flatten(), y)[0, 1]
+            else: p_data[p] = 0
+        
+        all_pearson[hisse] = p_data
+        
+        res_row = {'Hisse': hisse, 'Fiyat': curr, 'Durum': 'IDEAL UP' if is_ideal else ('UP' if is_up else '')}
+        for p in ema_periods: res_row[f'EMA{p}'] = round(ema_vals[p], 2)
+        for p in pearson_periods: res_row[f'P_{p}'] = round(p_data[p], 2)
+        results_ema.append(res_row)
+        
+        # --- BÖLÜM 2: KANAL VE STRATEJİ ---
+        # 233 Günlük Kanal
+        if len(df) < 233: continue
+        y = close.tail(233).values
+        X = np.arange(len(y)).reshape(-1, 1)
+        model = LinearRegression().fit(X, y)
+        pred = model.predict(X)
+        std = np.std(y - pred)
+        
+        upper = pred[-1] + 2*std
+        lower = pred[-1] - 2*std
+        dist_down = (curr - lower) / curr * 100
+        
+        rsi = calculate_rsi(close).iloc[-1]
+        vol_surge = False
+        if 'VOLUME_TL' in df.columns:
+            vol_surge = df['VOLUME_TL'].iloc[-1] > (df['VOLUME_TL'].rolling(10).mean().iloc[-1] * 1.2)
             
-            # RSI ve HACİM
-            rsi = calculate_rsi(df['CLOSING_TL']).iloc[-1]
-            vol_surge = False
-            if 'VOLUME_TL' in df.columns:
-                vol_surge = df['VOLUME_TL'].iloc[-1] > (df['VOLUME_TL'].rolling(10).mean().iloc[-1] * 1.2)
+        p_233 = p_data[233]
+        
+        label = ""; score = 0
+        if is_ideal and p_233 > 0.90 and rsi < 55 and dist_down < 3:
+            label = "🏆 TAM PUANLI"; score = 3
+        elif rsi < 35 and vol_surge:
+            label = "🚀 TEPKİ ADAYI"; score = 2
+        elif is_ideal and p_233 > 0.85 and rsi < 70:
+            label = "💪 GÜÇLÜ TREND"; score = 1
             
-            # STRATEJİ ETİKETİ
-            label = ""
-            if pearson > 0.90 and rsi < 55: label = "🏆 TAM PUANLI"
-            elif rsi < 35 and vol_surge: label = "🚀 TEPKİ ADAYI"
-            elif pearson > 0.85 and rsi < 70: label = "💪 GÜÇLÜ TREND"
-            
-            if label:
-                results.append({
-                    'Hisse': os.path.splitext(filename)[0],
-                    'Strateji': label,
-                    'Fiyat': closing,
-                    'Pearson (233)': round(pearson, 2),
-                    'RSI': round(rsi, 2),
-                    'Hacim Artışı': 'EVET' if vol_surge else 'HAYIR'
-                })
+        if label:
+            results_strat.append({
+                'Hisse': hisse, 'STRATEJİ': label, 'Fiyat': curr, 'Pearson (233)': round(p_233, 2),
+                'RSI': round(rsi, 2), 'Hacim Artışı': "EVET" if vol_surge else "-",
+                'Alt Banda Uzaklık %': round(dist_down, 2), 'Skor': score
+            })
 
-    if results:
-        df_res = pd.DataFrame(results).sort_values(by='Pearson (233)', ascending=False)
-        with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
-            df_res.to_excel(writer, index=False, sheet_name='Guclu_Trend')
-        print(f"Analiz Tamamlandı: {excel_path}")
-    else:
-        print("Uygun hisse bulunamadı.")
+    # KAYIT
+    fname = os.path.join(OUTPUT_DIR, f'Guclu_Trend_FULL_{datetime.now().strftime("%Y%m%d_%H%M")}.xlsx')
+    with pd.ExcelWriter(fname, engine='openpyxl') as writer:
+        if results_strat:
+            df_s = pd.DataFrame(results_strat).sort_values(by=['Skor', 'Pearson (233)'], ascending=False).drop(columns=['Skor'])
+            df_s.to_excel(writer, sheet_name='Guclu_Trend_Takip', index=False)
+            ws = writer.sheets['Guclu_Trend_Takip']
+            
+            gold = PatternFill(start_color='FFD700', fill_type='solid')
+            green = PatternFill(start_color='00B050', fill_type='solid')
+            purple = PatternFill(start_color='7030A0', fill_type='solid')
+            
+            for row in ws.iter_rows(min_row=2):
+                val = str(row[1].value)
+                if "TAM PUANLI" in val: row[1].fill = gold
+                elif "TEPKİ" in val: row[1].fill = green
+                elif "GÜÇLÜ" in val: row[1].fill = purple
+            autofit(ws)
+            
+        if results_ema:
+            df_e = pd.DataFrame(results_ema)
+            df_e.to_excel(writer, sheet_name='EMA_Pearson_Detay', index=False)
+            autofit(writer.sheets['EMA_Pearson_Detay'])
+            
+    print(f"✅ Rapor Kaydedildi: {fname}")
 
 if __name__ == "__main__":
-    process_stocks(DATA_DIR, OUTPUT_DIR)
+    main()
